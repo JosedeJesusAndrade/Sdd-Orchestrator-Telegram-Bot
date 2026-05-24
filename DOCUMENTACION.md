@@ -288,13 +288,13 @@ Script independiente para obtener el chat ID de un usuario de Telegram. Util cua
 #### `run_bot.bat`
 
 Launcher para Windows que:
-1. Cambia al directorio del proyecto
-2. Ejecuta `python -m telegram_bridge.bot`
+1. Activa el entorno virtual `.venv` del telegram_bridge
+2. Ejecuta `python bot.py`
 3. Mantiene la ventana abierta con `pause`
 
 #### `__init__.py`
 
-Vacio. Marca `telegram_bridge/` como un paquete Python para permitir `python -m telegram_bridge.bot`.
+Marca `telegram_bridge/` como un paquete Python (compatibilidad con versiones anteriores).
 
 ---
 
@@ -1037,17 +1037,22 @@ cd Balanceate
 
 #### 2. Crear entorno virtual e instalar dependencias
 
+> **NOTA IMPORTANTE**: A partir de ahora, `telegram_bridge` tiene su **propio entorno virtual aislado** 
+> independiente del proyecto principal `Balanceate`.
+
 ```bash
-python -m venv venv
-venv\Scripts\activate      # Windows
-# source venv/bin/activate # Linux/Mac
+cd telegram_bridge
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+# source .venv/bin/activate # Linux/Mac
 pip install -r requirements.txt
 ```
 
-Las dependencias clave del bridge:
-- `python-telegram-bot>=20.0`
-- `nest_asyncio>=1.6.0`
-- `python-dotenv==1.1.1`
+Las dependencias del bridge (gestionadas en `telegram_bridge/requirements.txt`):
+- `python-telegram-bot>=21.0`
+- `nest-asyncio>=1.6.0`
+- `python-dotenv>=1.0.0`
+- `openai>=1.0.0` (para transcripción de voz)
 
 #### 3. Instalar OpenCode CLI
 
@@ -1104,17 +1109,26 @@ ALLOWED_CHAT_IDS=8664220427,1234567890
 
 #### 7. Iniciar el bot
 
-**Opcion A: Manual**
+> **NOTA**: Asegúrate de estar en el directorio `telegram_bridge` y tener el entorno virtual activado.
 
-```bash
-python -m telegram_bridge.bot
-```
-
-**Opcion B: Con el .bat**
+**Opcion A: Con el script .bat (Recomendado)**
 
 Doble click en `telegram_bridge/run_bot.bat`
 
-**Opcion C: Como servicio de Windows (recomendado para produccion)**
+El script automáticamente:
+1. Activa el entorno virtual `.venv` del telegram_bridge
+2. Ejecuta `bot.py`
+
+**Opcion B: Manual**
+
+```bash
+cd telegram_bridge
+.venv\Scripts\activate      # Windows
+# source .venv/bin/activate # Linux/Mac
+python bot.py
+```
+
+**Opcion C: Como servicio de Windows (producción)**
 
 Usar NSSM (Non-Sucking Service Manager) o similar para ejecutar el bot como servicio.
 

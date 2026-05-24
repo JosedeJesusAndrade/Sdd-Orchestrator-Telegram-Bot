@@ -1,4 +1,6 @@
 @echo off
-cd /d C:\Users\marie\Desktop\mono\python\Balanceate
-python -m telegram_bridge.bot
+REM Telegram Bridge - Standalone execution with isolated venv
+cd /d %~dp0
+call .venv\Scripts\activate.bat
+python bot.py
 pause

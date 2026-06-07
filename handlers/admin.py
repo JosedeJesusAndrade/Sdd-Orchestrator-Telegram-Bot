@@ -3,11 +3,11 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from ..config import logger
-from ..persistence.sessions import load_session_map_safe, fetch_opencode_sessions
-from ..formatting.markdown import minimal_escape_mdv2, send_telegram_mdv2
-from ..utils.logging import mask_chat_id
-from . import authorize
+from config import logger
+from persistence.sessions import load_session_map_safe, fetch_opencode_sessions
+from formatting.markdown import minimal_escape_mdv2, send_telegram_mdv2
+from utils.logging import mask_chat_id
+from handlers import authorize
 
 
 async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

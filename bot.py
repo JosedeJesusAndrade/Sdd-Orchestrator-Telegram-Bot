@@ -23,27 +23,27 @@ from telegram.ext import (
     filters,
 )
 
-from .config import (
+from config import (
     BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
     OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
     OPENAI_API_KEY,
     logger,
 )
-from .persistence.sessions import (
+from persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
     fetch_opencode_sessions,
 )
-from .opencode.client import query_opencode_db
+from opencode.client import query_opencode_db
 
-from .handlers import current_model
+from handlers import current_model
 
-from .handlers.messages import handle_message, handle_voice
-from .handlers.commands import (
+from handlers.messages import handle_message, handle_voice
+from handlers.commands import (
     start_command, help_command, status_command,
     model_command, cancel_command, new_command, open_command,
 )
-from .handlers.sessions import session_command
-from .handlers.admin import test_md_command, session_preview_command
+from handlers.sessions import session_command
+from handlers.admin import test_md_command, session_preview_command
 
 
 # ── Connection state tracking ──────────────────────────────────────────
@@ -270,7 +270,7 @@ async def run_bot() -> None:
     """Run the bot with proper signal handling for clean shutdown."""
     import time
     # Set START_TIME as early as possible for /status uptime
-    from . import config
+    from handlers import config
     config.START_TIME = time.time()
 
     app = build_application()

@@ -8,7 +8,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 
-from ..config import SESSION_DB, OPENCODE_CMD, logger
+from config import SESSION_DB, OPENCODE_CMD, logger
 
 # Lock to prevent race conditions on sessions.json (multiple handlers)
 session_lock = asyncio.Lock()

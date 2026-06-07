@@ -10,24 +10,24 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
-from ..config import (
+from config import (
     DEFAULT_MODEL, OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
     OPENCODE_CMD, OPENAI_API_KEY, logger,
 )
-from ..persistence.sessions import (
+from persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
 )
-from ..opencode.client import run_opencode
-from ..formatting.markdown import (
+from opencode.client import run_opencode
+from formatting.markdown import (
     telegramify_markdown,
     minimal_escape_mdv2,
     _assemble_response,
     split_message,
     send_telegram_mdv2,
 )
-from ..utils.logging import mask_chat_id
-from . import (
+from utils.logging import mask_chat_id
+from handlers import (
     authorize, active_sessions, current_model,
     current_process, cancel_requests, process_status,
 )

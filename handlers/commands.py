@@ -6,19 +6,19 @@ import time
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from ..config import (
+from config import (
     DEFAULT_MODEL, START_TIME,
     MODEL_ALIASES, logger,
 )
-from ..persistence.sessions import (
+from persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
 )
-from ..utils.logging import mask_chat_id
-from . import (
+from utils.logging import mask_chat_id
+from handlers import (
     authorize, active_sessions, current_model,
     current_process, cancel_requests, process_status,
 )
-from .messages import _process_prompt, _relative_time
+from handlers.messages import _process_prompt, _relative_time
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

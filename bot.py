@@ -270,7 +270,7 @@ async def run_bot() -> None:
     """Run the bot with proper signal handling for clean shutdown."""
     import time
     # Set START_TIME as early as possible for /status uptime
-    from handlers import config
+    import config
     config.START_TIME = time.time()
 
     app = build_application()

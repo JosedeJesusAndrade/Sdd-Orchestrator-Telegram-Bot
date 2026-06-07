@@ -7,9 +7,10 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    DEFAULT_MODEL, START_TIME,
+    DEFAULT_MODEL,
     MODEL_ALIASES, logger,
 )
+import config as _config
 from persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
 )
@@ -91,8 +92,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         last_used = "N/A"
         prompt_count = 0
 
-    if START_TIME is not None:
-        uptime_seconds = int(time.time() - START_TIME)
+    if _config.START_TIME is not None:
+        uptime_seconds = int(time.time() - _config.START_TIME)
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         uptime_str = "{}h {}m {}s".format(hours, minutes, seconds)

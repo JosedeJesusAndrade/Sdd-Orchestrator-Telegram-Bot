@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 
-from config import OPENCODE_CMD, logger
+from ..config import OPENCODE_CMD, logger
 
 
 async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]:

@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from persistence.sessions import parse_opencode_session_list
+from ..persistence.sessions import parse_opencode_session_list
 
 
 class TestParseOpencodeSessionList:

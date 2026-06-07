@@ -1,7 +1,7 @@
 """Handler package: shared authorization and per-chat state."""
 import subprocess
 
-from config import ALLOWED_CHAT_IDS
+from ..config import ALLOWED_CHAT_IDS
 
 
 def authorize(chat_id: int) -> bool:

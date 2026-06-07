@@ -6,19 +6,19 @@ import time
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import (
+from ..config import (
     DEFAULT_MODEL, START_TIME,
     MODEL_ALIASES, logger,
 )
-from persistence.sessions import (
+from ..persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
 )
-from utils.logging import mask_chat_id
-from handlers import (
+from ..utils.logging import mask_chat_id
+from . import (
     authorize, active_sessions, current_model,
     current_process, cancel_requests, process_status,
 )
-from handlers.messages import _process_prompt, _relative_time
+from .messages import _process_prompt, _relative_time
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -91,10 +91,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         last_used = "N/A"
         prompt_count = 0
 
-    uptime_seconds = int(time.time() - START_TIME)
-    hours, remainder = divmod(uptime_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    uptime_str = "{}h {}m {}s".format(hours, minutes, seconds)
+    if START_TIME is not None:
+        uptime_seconds = int(time.time() - START_TIME)
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = "{}h {}m {}s".format(hours, minutes, seconds)
+    else:
+        uptime_str = "desconocido"
 
     await update.message.reply_text(
         "\U0001f4ca Estado de la sesi\u00f3n\n"

@@ -6,19 +6,19 @@ from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import OPENCODE_CMD, logger
-from persistence.sessions import (
+from ..config import OPENCODE_CMD, logger
+from ..persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
 )
-from formatting.markdown import (
+from ..formatting.markdown import (
     minimal_escape_mdv2,
     send_telegram_mdv2,
 )
-from opencode.client import query_opencode_db
-from utils.logging import mask_chat_id
-from handlers import authorize, active_sessions
-from handlers.messages import _relative_time
+from ..opencode.client import query_opencode_db
+from ..utils.logging import mask_chat_id
+from . import authorize, active_sessions
+from .messages import _relative_time
 
 
 async def _session_new(update: Update, chat_id: int, name: str | None) -> None:

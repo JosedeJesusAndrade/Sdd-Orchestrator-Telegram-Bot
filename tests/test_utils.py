@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from formatting.markdown import (
+from ..formatting.markdown import (
     clean_opencode_output, 
     telegramify_markdown,
     minimal_escape_mdv2, 

@@ -1,3 +1,14 @@
-python-telegram-bot>=20.0
+# Telegram Bridge - Standalone Dependencies
+# This project connects Telegram with OpenCode CLI
+
+# Core Telegram bot library
+python-telegram-bot>=21.0
+
+# Async support for nested event loops
 nest-asyncio>=1.6.0
+
+# Environment variables management
 python-dotenv>=1.0.0
+
+# OpenAI for voice transcription
+openai>=1.0.0

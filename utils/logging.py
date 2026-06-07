@@ -1,5 +1,5 @@
 """Logging utilities: chat ID masking for privacy."""
-from config import logger as _logger
+from ..config import logger as _logger
 
 
 def mask_chat_id(chat_id: int) -> str:

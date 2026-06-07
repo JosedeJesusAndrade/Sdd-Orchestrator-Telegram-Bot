@@ -1,6 +1,29 @@
-.env
+# Python
+.venv/
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environment
+.env
+.env.local
+
+# Logs
 *.log
+bot.log*
+
+# Sessions
 sessions.json
-*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

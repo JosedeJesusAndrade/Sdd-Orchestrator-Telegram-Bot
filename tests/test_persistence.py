@@ -3,7 +3,7 @@
 import sys, os, json, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from persistence.sessions import load_session_map, save_session_map
+from ..persistence.sessions import load_session_map, save_session_map
 
 
 class TestSessionPersistence:

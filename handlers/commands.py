@@ -1,6 +1,14 @@
-"""Command handlers: /start, /help, /status, /model, /cancel, /new, /open."""
-import sys
-import subprocess
+"""Command handlers: /start, /help, /status, /model, /cancel, /new, /open.
+
+Architecture change (Week 2):
+  All handlers now delegate to SessionStore and PromptService
+  instead of directly accessing global dicts or the sessions.json file.
+  This eliminates the 5 global state dicts from handlers/__init__.py
+  and the direct persistence.sessions imports.
+"""
+
+from __future__ import annotations
+
 import time
 
 from telegram import Update
@@ -11,74 +19,89 @@ from config import (
     MODEL_ALIASES, logger,
 )
 import config as _config
-from persistence.sessions import (
-    load_session_map_safe, save_session_map_atomic,
-)
 from utils.logging import mask_chat_id
-from handlers import (
-    authorized, active_sessions, current_model,
-    current_process, cancel_requests, process_status,
-)
-from handlers.messages import _process_prompt, _relative_time
+from utils.time_formatting import relative_time
+from handlers import authorized
+from services.prompt_service import PromptAlreadyRunningError
 
 
 @authorized
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
     await update.message.reply_text(
         "OpenCode Bot listo.\n\n"
-        "Env\u00eda cualquier mensaje y se ejecutar\u00e1 con OpenCode CLI.\n"
-        "Soporta m\u00faltiples sesiones con /session new|list|switch|delete|info\n"
-        "/help \u2014 ver todos los comandos\n"
-        "/status \u2014 estado de la sesi\u00f3n\n"
-        "/new \u2014 reiniciar sesi\u00f3n activa"
+        "Envía cualquier mensaje y se ejecutará con OpenCode CLI.\n"
+        "Soporta múltiples sesiones con /session new|list|switch|delete|info\n"
+        "/help — ver todos los comandos\n"
+        "/status — estado de la sesión\n"
+        "/new — reiniciar sesión activa"
     )
 
 
 @authorized
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
     await update.message.reply_text(
         "Comandos disponibles:\n\n"
-        "/open &lt;prompt&gt; - Enviar prompt al orquestador\n"
+        "/open <prompt> - Enviar prompt al orquestador\n"
         "/model pro|flash - Cambiar modelo\n"
-        "/cancel - Cancelar prompt en ejecuci\u00f3n\n"
-        "/status - Ver estado de la sesi\u00f3n\n"
-        "/new - Reiniciar sesi\u00f3n activa\n"
-        "/session new &lt;nombre&gt; - Crear sesi\u00f3n nombrada\n"
+        "/cancel - Cancelar prompt en ejecución\n"
+        "/status - Ver estado de la sesión\n"
+        "/new - Reiniciar sesión activa\n"
+        "/session new <nombre> - Crear sesión nombrada\n"
         "/session list - Listar todas las sesiones\n"
-        "/session switch &lt;nombre&gt; - Cambiar sesi\u00f3n activa\n"
-        "/session delete &lt;nombre&gt; - Eliminar sesi\u00f3n\n"
-        "/session info [nombre] - Detalles de una sesi\u00f3n\n"
+        "/session switch <nombre> - Cambiar sesión activa\n"
+        "/session delete <nombre> - Eliminar sesión\n"
+        "/session info [nombre] - Detalles de una sesión\n"
         "/session discover - Descubrir sesiones OpenCode existentes\n"
-        "/session adopt &lt;id&gt; &lt;nombre&gt; - Adoptar una sesi\u00f3n OpenCode\n"
-        "/test_md - Probar env\u00edo de MarkdownV2\n"
+        "/session adopt <id> <nombre> - Adoptar una sesión OpenCode\n"
+        "/test_md - Probar envío de MarkdownV2\n"
         "/help - Este mensaje\n\n"
-        "Env\u00e1 una nota de voz para transcribir y procesar como prompt.\n"
-        "Tambi\u00e9n pod\u00e9s enviar cualquier mensaje directamente sin usar /open."
+        "Envá una nota de voz para transcribir y procesar como prompt.\n"
+        "También podés enviar cualquier mensaje directamente sin usar /open."
     )
 
 
 @authorized
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show current session status using SessionStore."""
     chat_id = update.effective_chat.id
 
-    session = active_sessions.get(chat_id)
-    smap = await load_session_map_safe()
-    model = smap.get(str(chat_id), {}).get("model") or current_model.get(chat_id) or DEFAULT_MODEL
+    # Lazy import: bot.prompt_service / bot.session_store exist at call time
+    import bot
 
-    if session:
-        session_name = session.get("session_name", DEFAULT_SESSION_NAME)
-        session_id = session.get("session_id")
-        if session_id:
-            session_id_display = session_id[:24] + "..." if len(session_id) > 24 else session_id
-        else:
-            session_id_display = "pendiente"
-        first_msg = _relative_time(session["first_message"])
-        last_used = _relative_time(session["last_used"])
-        prompt_count = session.get("prompt_count", 0)
+    session = await bot.session_store.get_active_session(chat_id)
+    model = await bot.session_store.get_model(chat_id)
+
+    # Build session info
+    if session is not None:
+        session_name = session.name
+        session_id_display = (
+            session.real_id[:24] + "..."
+            if session.real_id and len(session.real_id) > 24
+            else (session.real_id or "pendiente")
+        )
+        first_msg = relative_time(
+            type("dt", (), {"replace": lambda **kw: None})()
+        ) if not session.created else "pendiente"
+        last_used = "N/A"
+        prompt_count = session.prompt_count
+
+        # Try to compute relative time for last_used
+        if session.last_used:
+            try:
+                from datetime import datetime, timezone
+                last_dt = datetime.fromisoformat(session.last_used)
+                last_used = relative_time(last_dt)
+            except Exception:
+                last_used = str(session.last_used)
+
+        # For created time
+        if session.created:
+            try:
+                from datetime import datetime, timezone
+                created_dt = datetime.fromisoformat(session.created)
+                first_msg = relative_time(created_dt)
+            except Exception:
+                first_msg = session.created[:19] if session.created else "N/A"
     else:
         session_name = "-"
         session_id_display = "-"
@@ -86,6 +109,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         last_used = "N/A"
         prompt_count = 0
 
+    # Uptime
     if _config.START_TIME is not None:
         uptime_seconds = int(time.time() - _config.START_TIME)
         hours, remainder = divmod(uptime_seconds, 3600)
@@ -95,12 +119,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         uptime_str = "desconocido"
 
     await update.message.reply_text(
-        "\U0001f4ca Estado de la sesi\u00f3n\n"
+        "\U0001f4ca Estado de la sesión\n"
         "\u251c\u2500 Nombre: {session_name}\n"
         "\u251c\u2500 ID OpenCode: {session_id_display}\n"
         "\u251c\u2500 Modelo: {model}\n"
-        "\u251c\u2500 Primera interacci\u00f3n: {first_msg}\n"
-        "\u251c\u2500 \u00daltima interacci\u00f3n: {last_used}\n"
+        "\u251c\u2500 Primera interacción: {first_msg}\n"
+        "\u251c\u2500 Última interacción: {last_used}\n"
         "\u251c\u2500 Total prompts: {prompt_count}\n"
         "\u2514\u2500 Uptime del bot: {uptime_str}".format(
             model=model,
@@ -116,44 +140,45 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @authorized
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reset the active session's OpenCode ID — next prompt starts fresh."""
     chat_id = update.effective_chat.id
 
-    smap = await load_session_map_safe()
-    chat_data = smap.get(str(chat_id), {})
-    active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
-    if active_name in chat_data.get("sessions", {}):
-        chat_data["sessions"][active_name]["id"] = None
-        chat_data["sessions"][active_name]["prompt_count"] = 0
-        await save_session_map_atomic(smap)
+    import bot
+    await bot.session_store.reset_session(chat_id)
 
-    active_sessions.pop(chat_id, None)
-    logger.info("Session '%s' reset by /new for %s", active_name, mask_chat_id(chat_id))
+    active = await bot.session_store.get_active_session(chat_id)
+    active_name = active.name if active else DEFAULT_SESSION_NAME
+
+    logger.info(
+        "Session '%s' reset by /new for %s",
+        active_name, mask_chat_id(chat_id),
+    )
     await update.message.reply_text(
-        "\U0001f504 Sesi\u00f3n '{name}' reiniciada. El pr\u00f3ximo mensaje comenzar\u00e1 desde cero.".format(name=active_name)
+        "\U0001f504 Sesión '{name}' reiniciada. "
+        "El próximo mensaje comenzará desde cero.".format(name=active_name)
     )
 
 
 @authorized
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View or change the AI model using SessionStore."""
     chat_id = update.effective_chat.id
-
     args = context.args
+
+    import bot
+
     if not args:
-        model = current_model.get(chat_id, DEFAULT_MODEL)
+        model = await bot.session_store.get_model(chat_id)
         await update.message.reply_text("Modelo actual: {}".format(model))
         return
 
     choice = args[0].lower()
     model_value = MODEL_ALIASES.get(choice)
     if model_value:
-        current_model[chat_id] = model_value
-        smap = await load_session_map_safe()
-        chat_data = smap.setdefault(str(chat_id), {})
-        chat_data["model"] = model_value
-        await save_session_map_atomic(smap)
+        await bot.session_store.set_model(chat_id, model_value)
         await update.message.reply_text("Modelo cambiado a {}".format(model_value))
     else:
-        model = current_model.get(chat_id, DEFAULT_MODEL)
+        model = await bot.session_store.get_model(chat_id)
         await update.message.reply_text(
             "Uso: /model pro | /model flash\n"
             "Modelo actual: {}".format(model)
@@ -162,62 +187,44 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @authorized
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel a running prompt using PromptService."""
     chat_id = update.effective_chat.id
 
-    status = process_status.get(chat_id, "idle")
-    if status == "cancelling":
-        await update.message.reply_text(
-            "El prompt ya est\u00e1 siendo cancelado..."
-        )
-        return
-    if status != "running":
-        if status == "idle":
-            await update.message.reply_text(
-                "No hay ning\u00fan prompt en ejecuci\u00f3n."
-            )
-        else:
-            await update.message.reply_text(
-                "El prompt ya termin\u00f3."
-            )
+    import bot
+
+    if not bot.prompt_service.is_running(chat_id):
+        await update.message.reply_text("No hay ningún prompt en ejecución.")
         return
 
-    process_status[chat_id] = "cancelling"
-
-    proc = current_process.pop(chat_id, None)
-    if proc is None or proc.poll() is not None:
-        await update.message.reply_text(
-            "No hay ning\u00fan prompt en ejecuci\u00f3n."
+    cancelled = bot.prompt_service.cancel(chat_id)
+    if cancelled:
+        logger.info(
+            "Prompt cancelled for %s", mask_chat_id(chat_id),
         )
-        return
-
-    cancel_requests.add(chat_id)
-    logger.info(
-        "Cancelling prompt for %s (PID %s)", mask_chat_id(chat_id), proc.pid
-    )
-    if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-        )
+        await update.message.reply_text("\u274c Prompt cancelado")
     else:
-        proc.kill()
-
-    await update.message.reply_text("\u274c Prompt cancelado")
+        await update.message.reply_text("No hay ningún prompt en ejecución.")
 
 
 @authorized
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute a prompt via /open <text> using PromptService."""
     chat_id = update.effective_chat.id
 
     prompt = " ".join(context.args)
     if not prompt:
-        await update.message.reply_text("Uso: /open &lt;prompt&gt;")
+        await update.message.reply_text("Uso: /open <prompt>")
         return
 
-    if chat_id in current_process:
-        await update.message.reply_text(
-            "\u23f3 Ya hay un prompt en proceso. Us\u00e1 /cancel para cancelarlo."
+    import bot
+
+    try:
+        await bot.prompt_service.execute(
+            chat_id=chat_id,
+            prompt_text=prompt,
+            update_for_logging=update,
         )
-        return
-
-    await _process_prompt(update, chat_id, prompt, context)
+    except PromptAlreadyRunningError:
+        await update.message.reply_text(
+            "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
+        )

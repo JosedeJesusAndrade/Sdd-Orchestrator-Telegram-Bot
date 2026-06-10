@@ -1,4 +1,13 @@
-"""Session handlers: /session new|list|switch|delete|info|discover|adopt."""
+"""Session handlers: /session new|list|switch|delete|info|discover|adopt.
+
+Architecture change (Week 2):
+  Replaced direct persistence.sessions calls with SessionStore methods.
+  Replaced send_telegram_mdv2 with MessageSender.
+  Uses lazy imports from bot.py to avoid circular dependencies.
+"""
+
+from __future__ import annotations
+
 import re
 import asyncio
 from datetime import datetime, timezone
@@ -8,17 +17,13 @@ from telegram.ext import ContextTypes
 
 from config import OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, logger
 from persistence.sessions import (
-    load_session_map_safe, save_session_map_atomic,
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
-)
-from formatting.markdown import (
-    minimal_escape_mdv2,
-    send_telegram_mdv2,
 )
 from opencode.client import query_opencode_db
 from utils.logging import mask_chat_id
-from handlers import authorized, active_sessions
-from handlers.messages import _relative_time
+from utils.time_formatting import relative_time
+from handlers import authorized
+from services.session_store import SessionExistsError, SessionNotFoundError
 
 
 async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
@@ -27,71 +32,62 @@ async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
         await update.message.reply_text("Uso: /session new <nombre>")
         return
 
-    smap = await load_session_map_safe()
-    chat_data = smap.setdefault(str(chat_id), {})
-    chat_sessions = chat_data.setdefault("sessions", {})
+    import bot
 
-    if name in chat_sessions:
+    try:
+        await bot.session_store.create_session(chat_id, name)
+    except SessionExistsError:
         await update.message.reply_text(
-            "\u26a0\ufe0f La sesi\u00f3n '{name}' ya existe. Us\u00e1 /session switch {name} para cambiarte.".format(name=name)
+            "\u26a0\ufe0f La sesión '{name}' ya existe. "
+            "Usá /session switch {name} para cambiarte.".format(name=name)
         )
         return
 
-    chat_sessions[name] = {
-        "id": None,
-        "title": name,
-        "created": datetime.now(timezone.utc).isoformat(),
-        "last_used": None,
-        "prompt_count": 0,
-    }
-    chat_data["active"] = name
-    await save_session_map_atomic(smap)
     invalidate_opencode_sessions_cache()
 
     logger.info("Session '%s' created for %s", name, mask_chat_id(chat_id))
     await update.message.reply_text(
-        "\U0001f195 Sesi\u00f3n '{name}' creada y activada.\n"
-        "El pr\u00f3ximo prompt se ejecutar\u00e1 en esta sesi\u00f3n.".format(name=name)
+        "\U0001f195 Sesión '{name}' creada y activada.\n"
+        "El próximo prompt se ejecutará en esta sesión.".format(name=name)
     )
 
 
 async def _session_list(update: Update, chat_id: int) -> None:
     """Show all sessions for this chat."""
-    smap = await load_session_map_safe()
-    chat_data = smap.get(str(chat_id), {})
-    chat_sessions = chat_data.get("sessions", {})
-    active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
+    import bot
 
-    if not chat_sessions:
+    sessions = await bot.session_store.list_sessions(chat_id)
+
+    if not sessions:
         await update.message.reply_text(
-            "\U0001f4cb No ten\u00e9s sesiones. Us\u00e1 /session new <nombre> para crear una."
+            "\U0001f4cb No tenés sesiones. Usá /session new <nombre> para crear una."
         )
         return
 
     lines = ["\U0001f4cb Tus sesiones:\n"]
-    for name, info in chat_sessions.items():
-        marker = "\U0001f7e2" if name == active_name else "\u26aa"
-        oc_id = info.get("id")
-        prompt_count = info.get("prompt_count", 0)
+    for s in sessions:
+        marker = "\U0001f7e2" if s.is_active else "\u26aa"
 
-        if oc_id:
-            id_display = oc_id[:16] + "..."
+        if s.real_id:
+            id_display = s.real_id[:16] + "..."
             last_used_str = ""
-            if info.get("last_used"):
+            if s.last_used:
                 try:
-                    last_dt = datetime.fromisoformat(info["last_used"])
-                    last_used_str = ", {}".format(_relative_time(last_dt))
+                    last_dt = datetime.fromisoformat(s.last_used)
+                    last_used_str = ", {}".format(relative_time(last_dt))
                 except Exception:
                     pass
             lines.append(
-                "{marker} {name} \u2192 `{id}` ({count} prompts{lu})".format(
-                    marker=marker, name=name, id=id_display,
-                    count=prompt_count, lu=last_used_str
+                "{marker} {name} → `{id}` ({count} prompts{lu})".format(
+                    marker=marker, name=s.name, id=id_display,
+                    count=s.prompt_count, lu=last_used_str,
                 )
             )
         else:
             lines.append(
-                "{marker} {name} \u2192 (nueva, sin usar a\u00fan)".format(marker=marker, name=name)
+                "{marker} {name} → (nueva, sin usar aún)".format(
+                    marker=marker, name=s.name,
+                )
             )
 
     await update.message.reply_text("\n".join(lines))
@@ -103,26 +99,23 @@ async def _session_switch(update: Update, chat_id: int, name: str | None) -> Non
         await update.message.reply_text("Uso: /session switch <nombre>")
         return
 
-    smap = await load_session_map_safe()
-    chat_data = smap.get(str(chat_id), {})
-    chat_sessions = chat_data.get("sessions", {})
+    import bot
 
-    if name not in chat_sessions:
+    try:
+        await bot.session_store.switch_session(chat_id, name)
+    except SessionNotFoundError:
         await update.message.reply_text(
-            "\u274c La sesi\u00f3n '{name}' no existe.\n"
-            "Us\u00e1 /session list para ver tus sesiones.".format(name=name)
+            "\u274c La sesión '{name}' no existe.\n"
+            "Usá /session list para ver tus sesiones.".format(name=name)
         )
         return
 
-    chat_data["active"] = name
-    await save_session_map_atomic(smap)
-
-    active_sessions.pop(chat_id, None)
-
-    logger.info("Session switched to '%s' for %s", name, mask_chat_id(chat_id))
+    logger.info(
+        "Session switched to '%s' for %s", name, mask_chat_id(chat_id),
+    )
     await update.message.reply_text(
-        "\U0001f500 Sesi\u00f3n cambiada a '{name}'.\n"
-        "Pr\u00f3ximo prompt usar\u00e1 esta sesi\u00f3n.".format(name=name)
+        "\U0001f500 Sesión cambiada a '{name}'.\n"
+        "Próximo prompt usará esta sesión.".format(name=name)
     )
 
 
@@ -132,36 +125,19 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
         await update.message.reply_text("Uso: /session delete <nombre>")
         return
 
-    smap = await load_session_map_safe()
-    chat_data = smap.get(str(chat_id), {})
-    chat_sessions = chat_data.get("sessions", {})
+    import bot
 
-    if name not in chat_sessions:
+    try:
+        real_id = await bot.session_store.delete_session(chat_id, name)
+    except SessionNotFoundError:
         await update.message.reply_text(
-            "\u274c La sesi\u00f3n '{name}' no existe.".format(name=name)
+            "\u274c La sesión '{name}' no existe.".format(name=name)
         )
         return
 
-    session_info = chat_sessions.pop(name)
-    was_active = chat_data.get("active") == name
-
-    if was_active:
-        chat_data["active"] = DEFAULT_SESSION_NAME
-        if DEFAULT_SESSION_NAME not in chat_sessions:
-            chat_sessions[DEFAULT_SESSION_NAME] = {
-                "id": None,
-                "title": "default",
-                "created": datetime.now(timezone.utc).isoformat(),
-                "last_used": None,
-                "prompt_count": 0,
-            }
-
-    await save_session_map_atomic(smap)
     invalidate_opencode_sessions_cache()
-    active_sessions.pop(chat_id, None)
 
     # Clean up in OpenCode if it had a real ID
-    real_id = session_info.get("id")
     if real_id:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -171,42 +147,44 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
             )
             await asyncio.wait_for(proc.wait(), timeout=INTERNAL_SUBPROCESS_TIMEOUT)
             logger.info(
-                "Deleted OpenCode session %s for chat %s", real_id, mask_chat_id(chat_id)
+                "Deleted OpenCode session %s for chat %s",
+                real_id, mask_chat_id(chat_id),
             )
         except Exception as e:
             logger.warning(
-                "Failed to delete OpenCode session %s: %s", real_id, e
+                "Failed to delete OpenCode session %s: %s", real_id, e,
             )
 
-    msg = "\U0001f5d1\ufe0f Sesi\u00f3n '{name}' eliminada.".format(name=name)
-    if was_active:
-        msg += "\nSesi\u00f3n activa cambiada a 'default'."
-    await update.message.reply_text(msg)
+    await update.message.reply_text(
+        "\U0001f5d1\ufe0f Sesión '{name}' eliminada.".format(name=name)
+    )
 
 
 async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
     """Show detailed info about a session."""
-    smap = await load_session_map_safe()
-    chat_data = smap.get(str(chat_id), {})
-    chat_sessions = chat_data.get("sessions", {})
-    active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
+    import bot
 
-    target_name = name if name else active_name
+    sessions = await bot.session_store.list_sessions(chat_id)
 
-    if target_name not in chat_sessions:
+    # Determine the target session name
+    active_session = await bot.session_store.get_active_session(chat_id)
+    target_name = name if name else (active_session.name if active_session else DEFAULT_SESSION_NAME)
+
+    # Find the matching SessionInfo
+    target = next((s for s in sessions if s.name == target_name), None)
+    if target is None:
         await update.message.reply_text(
-            "\u274c La sesi\u00f3n '{name}' no existe.".format(name=target_name)
+            "\u274c La sesión '{name}' no existe.".format(name=target_name)
         )
         return
 
-    info = chat_sessions[target_name]
-    oc_id = info.get("id")
-    title = info.get("title", target_name)
-    created = info.get("created", "\u2014")
-    last_used = info.get("last_used")
-    prompt_count = info.get("prompt_count", 0)
+    oc_id = target.real_id
+    title = target.title
+    created = target.created
+    last_used = target.last_used
+    prompt_count = target.prompt_count
 
-    id_display = "\u2014 (sin ID a\u00fan)" if not oc_id else (
+    id_display = "\u2014 (sin ID aún)" if not oc_id else (
         oc_id[:24] + "..." if len(oc_id) > 24 else oc_id
     )
 
@@ -214,18 +192,18 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
     if last_used:
         try:
             last_dt = datetime.fromisoformat(last_used)
-            last_used_str = _relative_time(last_dt)
+            last_used_str = relative_time(last_dt)
         except Exception:
             last_used_str = str(last_used)
 
     created_display = created[:19] if created and created != "\u2014" else created
 
     lines = [
-        "\U0001f4cb Sesi\u00f3n: {name}".format(name=target_name),
+        "\U0001f4cb Sesión: {name}".format(name=target_name),
         "    ID: {id}".format(id=id_display),
-        "    T\u00edtulo: {title}".format(title=title),
+        "    Título: {title}".format(title=title),
         "    Creada: {created}".format(created=created_display),
-        "    \u00daltimo uso: {lu}".format(lu=last_used_str),
+        "    Último uso: {lu}".format(lu=last_used_str),
         "    Prompts: {count}".format(count=prompt_count),
     ]
 
@@ -233,21 +211,29 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
         try:
             msg_rows = await query_opencode_db(
                 f"SELECT COUNT(*) as count FROM message WHERE session_id = '{oc_id}'",
-                allowed_pattern=r'^[a-zA-Z0-9_]+$'
+                allowed_pattern=r'^[a-zA-Z0-9_]+$',
             )
             if msg_rows:
-                lines.append("    Mensajes en BD: {cnt}".format(cnt=msg_rows[0].get('count', '?')))
+                lines.append(
+                    "    Mensajes en BD: {cnt}".format(
+                        cnt=msg_rows[0].get('count', '?'),
+                    )
+                )
 
             session_rows = await query_opencode_db(
                 f"SELECT created_at, model FROM session WHERE id = '{oc_id}'",
-                allowed_pattern=r'^[a-zA-Z0-9_]+$'
+                allowed_pattern=r'^[a-zA-Z0-9_]+$',
             )
             if session_rows:
                 row = session_rows[0]
                 if row.get("created_at"):
-                    lines.append("    Creada (BD): {ca}".format(ca=row['created_at']))
+                    lines.append(
+                        "    Creada (BD): {ca}".format(ca=row['created_at']),
+                    )
                 if row.get("model"):
-                    lines.append("    Modelo (BD): {m}".format(m=row['model']))
+                    lines.append(
+                        "    Modelo (BD): {m}".format(m=row['model']),
+                    )
         except Exception:
             pass
 
@@ -257,14 +243,15 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
 async def _session_discover(update: Update, chat_id: int) -> None:
     """Show all OpenCode sessions with adoption status."""
     oc_sessions = await fetch_opencode_sessions()
-    smap = await load_session_map_safe()
-    chat_sessions = smap.get(str(chat_id), {}).get("sessions", {})
 
-    adopted_map = {}
-    for name, info in chat_sessions.items():
-        real_id = info.get("id")
-        if real_id:
-            adopted_map[real_id] = name
+    import bot
+    sessions = await bot.session_store.list_sessions(chat_id)
+
+    # Build adoption map
+    adopted_map: dict[str, str] = {}
+    for s in sessions:
+        if s.real_id:
+            adopted_map[s.real_id] = s.name
 
     if not oc_sessions:
         await update.message.reply_text(
@@ -280,10 +267,11 @@ async def _session_discover(update: Update, chat_id: int) -> None:
 
         friendly_name = adopted_map.get(sid)
         if friendly_name:
-            prompt_count = chat_sessions.get(friendly_name, {}).get("prompt_count", 0)
+            matching = next((x for x in sessions if x.name == friendly_name), None)
+            prompt_count = matching.prompt_count if matching else 0
             lines.append(
-                "\u2705 *{name}* \u2192 `{sid}` (ya adoptada, {count} prompts)".format(
-                    name=friendly_name, sid=sid, count=prompt_count
+                "\u2705 *{name}* → `{sid}` (ya adoptada, {count} prompts)".format(
+                    name=friendly_name, sid=sid, count=prompt_count,
                 )
             )
         else:
@@ -291,23 +279,28 @@ async def _session_discover(update: Update, chat_id: int) -> None:
                 "\u26aa *{title}*\n"
                 "   `{sid}`\n"
                 "   Para adoptar: `/session adopt {sid} <nombre>`".format(
-                    title=title, sid=sid
+                    title=title, sid=sid,
                 )
             )
         lines.append("")
 
     if len(oc_sessions) > 15:
-        lines.append("Mostrando 15 de {} sesiones.".format(len(oc_sessions)))
+        lines.append(
+            "Mostrando 15 de {} sesiones.".format(len(oc_sessions))
+        )
 
-    lines.append("\nUsa `/session adopt <id> <nombre>` para adoptar una sesi\u00f3n.")
+    lines.append(
+        "\nUsa `/session adopt <id> <nombre>` para adoptar una sesión."
+    )
 
     msg = "\n".join(lines)
-    msg = minimal_escape_mdv2(msg)
-    await send_telegram_mdv2(context.bot, chat_id, msg)
+
+    # Use MessageSender for delivery
+    await bot.message_sender.send_formatted(chat_id, msg)
 
 
 async def _session_adopt(
-    update: Update, chat_id: int, real_id: str | None, name: str | None
+    update: Update, chat_id: int, real_id: str | None, name: str | None,
 ) -> None:
     """Adopt an existing OpenCode session by real ID."""
     if not real_id or not name:
@@ -318,14 +311,15 @@ async def _session_adopt(
 
     if name == "<nombre>":
         await update.message.reply_text(
-            "\u274c Reemplaz\u00e1 `<nombre>` con un nombre para la sesi\u00f3n.\n"
+            "\u274c Reemplazá `<nombre>` con un nombre para la sesión.\n"
             "Ejemplo: `/session adopt {id} telegram-bot`".format(id=real_id[:24])
         )
         return
 
     if not re.match(r'^[a-zA-Z0-9_-]{1,30}$', name):
         await update.message.reply_text(
-            "\u274c El nombre debe tener entre 1 y 30 caracteres y solo usar letras, n\u00fameros, guiones y guiones bajos.\n"
+            "\u274c El nombre debe tener entre 1 y 30 caracteres y solo usar "
+            "letras, números, guiones y guiones bajos.\n"
             "Ejemplo: `mi-sesion`, `balanceate_api`, `docs`"
         )
         return
@@ -335,23 +329,30 @@ async def _session_adopt(
 
     if real_id not in oc_by_id:
         await update.message.reply_text(
-            "\u274c La sesi\u00f3n `{id}` no existe en OpenCode.".format(id=real_id)
+            "\u274c La sesión `{id}` no existe en OpenCode.".format(id=real_id)
         )
         return
+
+    import bot
+
+    # Check if name already exists
+    existing = await bot.session_store.list_sessions(chat_id)
+    if any(s.name == name for s in existing):
+        await update.message.reply_text(
+            "\u26a0\ufe0f El nombre '{name}' ya existe. "
+            "Usá /session switch {name} para usarla.".format(name=name)
+        )
+        return
+
+    # Adopt: we'll create the session entry manually since adopt has
+    # extra logic (fetching title from OpenCode)
+    from persistence.sessions import load_session_map_safe, save_session_map_atomic
 
     smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     chat_sessions = chat_data.setdefault("sessions", {})
 
-    if name in chat_sessions:
-        await update.message.reply_text(
-            "\u26a0\ufe0f El nombre '{name}' ya existe. "
-            "Us\u00e1 /session switch {name} para usarla.".format(name=name)
-        )
-        return
-
     oc_info = oc_by_id[real_id]
-
     chat_sessions[name] = {
         "id": real_id,
         "title": oc_info.get("title", name),
@@ -367,12 +368,13 @@ async def _session_adopt(
     invalidate_opencode_sessions_cache()
 
     logger.info(
-        "Session '%s' adopted (%s) for %s", name, real_id, mask_chat_id(chat_id)
+        "Session '%s' adopted (%s) for %s",
+        name, real_id, mask_chat_id(chat_id),
     )
 
     await update.message.reply_text(
-        "\u2705 Sesi\u00f3n '{name}' adoptada (ID: `{id}`)".format(
-            name=name, id=real_id
+        "\u2705 Sesión '{name}' adoptada (ID: `{id}`)".format(
+            name=name, id=real_id,
         )
     )
 
@@ -410,5 +412,8 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _session_adopt(update, chat_id, real_id, adopt_name)
     else:
         await update.message.reply_text(
-            "Subcomando desconocido: {}. Uso: /session [new|list|switch|delete|info|discover|adopt]".format(subcommand)
+            "Subcomando desconocido: {}. "
+            "Uso: /session [new|list|switch|delete|info|discover|adopt]".format(
+                subcommand,
+            )
         )

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import OPENCODE_CMD, logger
+from config import OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, logger
 from persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
@@ -17,7 +17,7 @@ from formatting.markdown import (
 )
 from opencode.client import query_opencode_db
 from utils.logging import mask_chat_id
-from handlers import authorize, active_sessions
+from handlers import authorized, active_sessions
 from handlers.messages import _relative_time
 
 
@@ -60,7 +60,7 @@ async def _session_list(update: Update, chat_id: int) -> None:
     smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     chat_sessions = chat_data.get("sessions", {})
-    active_name = chat_data.get("active", "default")
+    active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
 
     if not chat_sessions:
         await update.message.reply_text(
@@ -146,9 +146,9 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
     was_active = chat_data.get("active") == name
 
     if was_active:
-        chat_data["active"] = "default"
-        if "default" not in chat_sessions:
-            chat_sessions["default"] = {
+        chat_data["active"] = DEFAULT_SESSION_NAME
+        if DEFAULT_SESSION_NAME not in chat_sessions:
+            chat_sessions[DEFAULT_SESSION_NAME] = {
                 "id": None,
                 "title": "default",
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -169,7 +169,7 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await asyncio.wait_for(proc.wait(), timeout=10)
+            await asyncio.wait_for(proc.wait(), timeout=INTERNAL_SUBPROCESS_TIMEOUT)
             logger.info(
                 "Deleted OpenCode session %s for chat %s", real_id, mask_chat_id(chat_id)
             )
@@ -189,7 +189,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
     smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     chat_sessions = chat_data.get("sessions", {})
-    active_name = chat_data.get("active", "default")
+    active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
 
     target_name = name if name else active_name
 
@@ -377,11 +377,10 @@ async def _session_adopt(
     )
 
 
+@authorized
 async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for /session subcommands."""
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        return
 
     args = context.args
     if not args:

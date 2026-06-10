@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 
 from config import (
     DEFAULT_MODEL, OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
-    OPENCODE_CMD, OPENAI_API_KEY, logger,
+    OPENCODE_CMD, OPENAI_API_KEY, DEFAULT_SESSION_NAME,
+    PROGRESS_UPDATE_INTERVAL, logger,
 )
 from persistence.sessions import (
     load_session_map_safe, save_session_map_atomic,
@@ -28,7 +29,7 @@ from formatting.markdown import (
 )
 from utils.logging import mask_chat_id
 from handlers import (
-    authorize, active_sessions, current_model,
+    authorized, active_sessions, current_model,
     current_process, cancel_requests, process_status,
 )
 
@@ -81,12 +82,12 @@ def _relative_time(past_dt: datetime) -> str:
     return "hace {}d {}h".format(days, hours_rem)
 
 
-async def progress_updater(context, chat_id: int, message_id: int, stop_event: asyncio.Event):
+async def progress_updater(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event) -> None:
     """Update the 'processing...' message every 5 seconds with elapsed time."""
     seconds = 0
     while not stop_event.is_set():
-        await asyncio.sleep(5)
-        seconds += 5
+        await asyncio.sleep(PROGRESS_UPDATE_INTERVAL)
+        seconds += PROGRESS_UPDATE_INTERVAL
         if not stop_event.is_set():
             try:
                 await context.bot.edit_message_text(
@@ -108,11 +109,11 @@ async def _process_prompt(
     smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     chat_sessions = chat_data.setdefault("sessions", {})
-    session_name = chat_data.get("active", "default")
+    session_name = chat_data.get("active", DEFAULT_SESSION_NAME)
 
     # Ensure default session exists in sessions.json
-    if "default" not in chat_sessions:
-        chat_sessions["default"] = {
+    if DEFAULT_SESSION_NAME not in chat_sessions:
+        chat_sessions[DEFAULT_SESSION_NAME] = {
             "id": None,
             "title": "default",
             "created": now.isoformat(),
@@ -120,7 +121,7 @@ async def _process_prompt(
             "prompt_count": 0,
         }
     if not chat_data.get("active"):
-        chat_data["active"] = "default"
+        chat_data["active"] = DEFAULT_SESSION_NAME
         await save_session_map_atomic(smap)
 
     # Extract session data from sessions.json (source of truth)
@@ -168,7 +169,7 @@ async def _process_prompt(
         session["last_used"] = now
         session["prompt_count"] = session.get("prompt_count", 0) + 1
         # Immediately persist prompt count to sessions.json
-        active_name = smap.get(str(chat_id), {}).get("active", "default")
+        active_name = smap.get(str(chat_id), {}).get("active", DEFAULT_SESSION_NAME)
         sessions_dict = smap.get(str(chat_id), {}).get("sessions", {})
         if active_name in sessions_dict:
             sessions_dict[active_name]["prompt_count"] = session["prompt_count"]
@@ -299,7 +300,7 @@ async def _process_prompt(
         if exitcode == 0 and not timed_out and has_real_id:
             try:
                 chat_data = smap.get(str(chat_id), {})
-                active_name = chat_data.get("active", "default")
+                active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
                 if active_name in chat_data.get("sessions", {}):
                     chat_data["sessions"][active_name]["prompt_count"] = active_sessions[chat_id]["prompt_count"]
                     chat_data["sessions"][active_name]["last_used"] = datetime.now(timezone.utc).isoformat()
@@ -373,11 +374,10 @@ async def _process_prompt(
                 pass
 
 
+@authorized
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe and process as prompt."""
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        return
 
     voice = update.message.voice
     if not voice:
@@ -429,11 +429,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 pass
 
 
+@authorized
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Message from unauthorized chat %s", mask_chat_id(chat_id))
-        return
 
     prompt = update.message.text.strip()
     if not prompt:

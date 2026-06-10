@@ -27,3 +27,31 @@ cancel_requests: set[int] = set()
 # Track process status per chat for accurate /cancel messages
 # "idle" | "running" | "cancelling"
 process_status: dict[int, str] = {}
+
+
+import functools
+from typing import Callable, Awaitable
+
+from config import logger
+from utils.logging import mask_chat_id
+
+
+def authorized(
+    handler: Callable[..., Awaitable[None]]
+) -> Callable[..., Awaitable[None]]:
+    """Decorator: only allow authorized chat_ids to execute the handler.
+
+    Extracts chat_id from the ``update`` parameter automatically.
+    """
+    @functools.wraps(handler)
+    async def wrapper(*args, **kwargs) -> None:
+        update = args[0] if args else kwargs.get("update")
+        if update is None:
+            logger.error("@authorized could not find Update in %s", handler.__name__)
+            return
+        chat_id = update.effective_chat.id
+        if not authorize(chat_id):
+            logger.warning("Unauthorized %s from %s", handler.__name__, mask_chat_id(chat_id))
+            return
+        return await handler(*args, **kwargs)
+    return wrapper

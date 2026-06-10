@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 
-from config import OPENCODE_CMD, logger
+from config import OPENCODE_CMD, INTERNAL_SUBPROCESS_TIMEOUT, logger
 
 
 async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]:
@@ -26,7 +26,7 @@ async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=10,
+                timeout=INTERNAL_SUBPROCESS_TIMEOUT,
             )
         )
         if result.returncode != 0:
@@ -45,7 +45,7 @@ def run_opencode(
     chat_id: int = None,
     current_process: dict = None,
     process_status: dict = None,
-) -> tuple:
+) -> tuple[str, str, int, bool]:
     """Run opencode with proper timeout via subprocess.Popen.
 
     Returns (stdout: str, stderr: str, exitcode: int, timed_out: bool).

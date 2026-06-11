@@ -118,7 +118,6 @@ class MessageSender:
             )
         except Exception:
             clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
-            clean = clean.replace('\\', '')
             try:
                 return await self._bot.send_message(chat_id=chat_id, text=clean)
             except Exception as e:

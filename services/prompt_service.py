@@ -218,9 +218,13 @@ class PromptService:
             )
             return
 
-        # Handle hard errors (non-zero exit + empty stdout)
-        if result["returncode"] != 0 and not result["stdout"].strip():
-            error_text = result["stderr"] or "Unknown error"
+        # Handle hard errors (non-zero exit + empty stdout, or errors via stderr)
+        has_error = (
+            result["returncode"] != 0
+            or (result["stderr"] and not result["stdout"].strip())
+        )
+        if has_error:
+            error_text = result["stderr"] or result["stdout"] or "Unknown error"
             await self._sender.edit_message(
                 chat_id, proc_msg.message_id,
                 f"\u274c Error: {error_text[:500]}",
@@ -232,7 +236,10 @@ class PromptService:
         response = _assemble_response(cleaned, result["stderr"])
 
         if not response.strip():
-            response = "\u2705 Completado (sin output)."
+            if result["returncode"] != 0:
+                response = f"\u274c Error (c\u00f3digo {result['returncode']}): sin output."
+            else:
+                response = "\u2705 Completado (sin output)."
 
         # Prepend new-session header for brand-new sessions
         if session is not None and not session.real_id and session.name:
@@ -241,16 +248,23 @@ class PromptService:
                 + response
             )
 
-        # Send formatted response
-        await self._sender.send_formatted(chat_id, response)
+        # Track whether we actually delivered content
+        is_success = result["returncode"] == 0
+        response_sent = False
 
-        # Edit "Processing..." to "Completed"
-        try:
-            await self._sender.edit_message(
-                chat_id, proc_msg.message_id, "\u2705 Completado."
-            )
-        except Exception:
-            pass
+        # Send formatted response
+        sent = await self._sender.send_formatted(chat_id, response)
+        if sent:
+            response_sent = True
+
+        # Edit "Processing..." to "Completed" only if successful
+        if response_sent and is_success:
+            try:
+                await self._sender.edit_message(
+                    chat_id, proc_msg.message_id, "\u2705 Completado."
+                )
+            except Exception:
+                pass
 
         # Capture session ID for new sessions
         await self._capture_session_id(chat_id, result["stdout"], session)

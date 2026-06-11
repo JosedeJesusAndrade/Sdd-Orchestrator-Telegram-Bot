@@ -25,7 +25,7 @@ class TelegramAdapter:
             )
             return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=msg.text or text)
         except Exception:
-            clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '').replace('\\', '')
+            clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
             try:
                 msg = await self._bot.send_message(chat_id=chat_id, text=clean)
                 return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=clean)

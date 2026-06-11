@@ -343,27 +343,11 @@ async def _session_adopt(
         )
         return
 
-    # Adopt: we'll create the session entry manually since adopt has
-    # extra logic (fetching title from OpenCode)
-    from persistence.sessions import load_session_map_safe, save_session_map_atomic
-
-    smap = await load_session_map_safe()
-    chat_data = smap.setdefault(str(chat_id), {})
-    chat_sessions = chat_data.setdefault("sessions", {})
-
+    # Adopt via SessionStore (single source of truth, avoids dual-cache bypass)
     oc_info = oc_by_id[real_id]
-    chat_sessions[name] = {
-        "id": real_id,
-        "title": oc_info.get("title", name),
-        "created": datetime.now(timezone.utc).isoformat(),
-        "last_used": None,
-        "prompt_count": 0,
-    }
-
-    if not chat_data.get("active"):
-        chat_data["active"] = name
-
-    await save_session_map_atomic(smap)
+    await container.session_store.create_session(chat_id, name)
+    await container.session_store.update_session_id(chat_id, real_id)
+    await container.session_store.update_session_title(chat_id, name, oc_info.get("title", name))
     invalidate_opencode_sessions_cache()
 
     logger.info(

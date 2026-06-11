@@ -24,6 +24,7 @@ from utils.time_formatting import relative_time
 from handlers import authorized
 from services.session_store import SessionExistsError, SessionNotFoundError
 from services.container import AppContainer
+from locales import get_strings
 
 
 def _get_container(context) -> AppContainer:
@@ -33,15 +34,16 @@ def _get_container(context) -> AppContainer:
 
 async def _session_new(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Create a named session (lazy: no OpenCode call yet)."""
+    S = get_strings()
     if not name:
-        await update.message.reply_text("Uso: /session new <nombre>")
+        await update.message.reply_text(S.SESSION_NEW_USAGE)
         return
 
     try:
         await container.session_store.create_session(chat_id, name)
     except SessionExistsError:
         await update.message.reply_text(
-            "\u26a0\ufe0f La sesión '{name}' ya existe. "
+            S.SESSION_EXISTS.format(name=name) + " "
             "Usá /session switch {name} para cambiarte.".format(name=name)
         )
         return
@@ -50,22 +52,23 @@ async def _session_new(update: Update, chat_id: int, name: str | None, container
 
     logger.info("Session '%s' created for %s", name, mask_chat_id(chat_id))
     await update.message.reply_text(
-        "\U0001f195 Sesión '{name}' creada y activada.\n"
-        "El próximo prompt se ejecutará en esta sesión.".format(name=name)
+        S.SESSION_CREATED.format(name=name) + "\n"
+        "El próximo prompt se ejecutará en esta sesión."
     )
 
 
 async def _session_list(update: Update, chat_id: int, container: AppContainer) -> None:
     """Show all sessions for this chat."""
+    S = get_strings()
     sessions = await container.session_store.list_sessions(chat_id)
 
     if not sessions:
         await update.message.reply_text(
-            "\U0001f4cb No tenés sesiones. Usá /session new <nombre> para crear una."
+            S.SESSION_LIST_EMPTY + " Usá /session new <nombre> para crear una."
         )
         return
 
-    lines = ["\U0001f4cb Tus sesiones:\n"]
+    lines = [S.SESSION_LIST_HEADER + "\n"]
     for s in sessions:
         marker = "\U0001f7e2" if s.is_active else "\u26aa"
 
@@ -96,16 +99,17 @@ async def _session_list(update: Update, chat_id: int, container: AppContainer) -
 
 async def _session_switch(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Switch active session."""
+    S = get_strings()
     if not name:
-        await update.message.reply_text("Uso: /session switch <nombre>")
+        await update.message.reply_text(S.SESSION_SWITCH_USAGE)
         return
 
     try:
         await container.session_store.switch_session(chat_id, name)
     except SessionNotFoundError:
         await update.message.reply_text(
-            "\u274c La sesión '{name}' no existe.\n"
-            "Usá /session list para ver tus sesiones.".format(name=name)
+            S.SESSION_NOT_FOUND.format(name=name) + "\n"
+            "Usá /session list para ver tus sesiones."
         )
         return
 
@@ -113,22 +117,23 @@ async def _session_switch(update: Update, chat_id: int, name: str | None, contai
         "Session switched to '%s' for %s", name, mask_chat_id(chat_id),
     )
     await update.message.reply_text(
-        "\U0001f500 Sesión cambiada a '{name}'.\n"
-        "Próximo prompt usará esta sesión.".format(name=name)
+        S.SESSION_SWITCHED.format(name=name) + "\n"
+        "Próximo prompt usará esta sesión."
     )
 
 
 async def _session_delete(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Delete a named session."""
+    S = get_strings()
     if not name:
-        await update.message.reply_text("Uso: /session delete <nombre>")
+        await update.message.reply_text(S.SESSION_DELETE_USAGE)
         return
 
     try:
         real_id = await container.session_store.delete_session(chat_id, name)
     except SessionNotFoundError:
         await update.message.reply_text(
-            "\u274c La sesión '{name}' no existe.".format(name=name)
+            S.SESSION_NOT_FOUND.format(name=name)
         )
         return
 
@@ -153,12 +158,13 @@ async def _session_delete(update: Update, chat_id: int, name: str | None, contai
             )
 
     await update.message.reply_text(
-        "\U0001f5d1\ufe0f Sesión '{name}' eliminada.".format(name=name)
+        S.SESSION_DELETED.format(name=name)
     )
 
 
 async def _session_info(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Show detailed info about a session."""
+    S = get_strings()
     sessions = await container.session_store.list_sessions(chat_id)
 
     # Determine the target session name
@@ -169,7 +175,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None, containe
     target = next((s for s in sessions if s.name == target_name), None)
     if target is None:
         await update.message.reply_text(
-            "\u274c La sesión '{name}' no existe.".format(name=target_name)
+            S.SESSION_NOT_FOUND.format(name=target_name)
         )
         return
 
@@ -179,7 +185,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None, containe
     last_used = target.last_used
     prompt_count = target.prompt_count
 
-    id_display = "\u2014 (sin ID aún)" if not oc_id else (
+    id_display = S.SESSION_INFO_NO_ID if not oc_id else (
         oc_id[:24] + "..." if len(oc_id) > 24 else oc_id
     )
 
@@ -194,7 +200,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None, containe
     created_display = created[:19] if created and created != "\u2014" else created
 
     lines = [
-        "\U0001f4cb Sesión: {name}".format(name=target_name),
+        S.SESSION_INFO_HEADER.format(name=target_name),
         "    ID: {id}".format(id=id_display),
         "    Título: {title}".format(title=title),
         "    Creada: {created}".format(created=created_display),
@@ -237,6 +243,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None, containe
 
 async def _session_discover(update: Update, chat_id: int, container: AppContainer) -> None:
     """Show all OpenCode sessions with adoption status."""
+    S = get_strings()
     oc_sessions = await fetch_opencode_sessions()
     sessions = await container.session_store.list_sessions(chat_id)
 
@@ -248,11 +255,11 @@ async def _session_discover(update: Update, chat_id: int, container: AppContaine
 
     if not oc_sessions:
         await update.message.reply_text(
-            "\U0001f4cb No se encontraron sesiones OpenCode."
+            S.SESSION_DISCOVER_EMPTY
         )
         return
 
-    lines = ["\U0001f4cb *Sesiones OpenCode descubiertas:*\n"]
+    lines = [S.SESSION_DISCOVER_HEADER + "\n"]
 
     for s in oc_sessions[:15]:
         sid = s["id"]
@@ -376,12 +383,11 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Handler for /session subcommands."""
     chat_id = update.effective_chat.id
     container = _get_container(context)
+    S = get_strings()
 
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Uso: /session [new|list|switch|delete|info|discover|adopt] [nombre]"
-        )
+        await update.message.reply_text(S.SESSION_USAGE)
         return
 
     subcommand = args[0].lower()
@@ -404,9 +410,4 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         adopt_name = args[2] if len(args) > 2 else None
         await _session_adopt(update, chat_id, real_id, adopt_name, container)
     else:
-        await update.message.reply_text(
-            "Subcomando desconocido: {}. "
-            "Uso: /session [new|list|switch|delete|info|discover|adopt]".format(
-                subcommand,
-            )
-        )
+        await update.message.reply_text(S.SESSION_UNKNOWN_SUB.format(sub=subcommand))

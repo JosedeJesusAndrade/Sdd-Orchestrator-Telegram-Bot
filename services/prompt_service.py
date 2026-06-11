@@ -1,5 +1,5 @@
 """PromptService: execute OpenCode prompts, manage output, track state.
- 
+  
 Architecture rationale:
   The old _process_prompt() was a 273-line monolithic function inside
   handlers/messages.py. It handled:
@@ -22,8 +22,12 @@ Architecture rationale:
 
   Why a class?
     - Stateful: tracks running tasks per chat_id
-    - Injectable: SessionStore + MessageSender + AIBackend in constructor
+    - Injectable: SessionStore + MessageSender + AIProviderFactory in constructor
     - Testable: mock the backend and verify behavior
+
+  Week 4: AIProviderFactory replaces direct AIBackend. Per-chat settings
+  (provider, timeout, workdir) read from SessionStore. Factory resolves
+  the correct backend per provider.
 """
 
 from __future__ import annotations
@@ -37,10 +41,9 @@ from typing import TYPE_CHECKING
 
 from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME,
+    OPENCODE_TIMEOUT, OPENCODE_WORKDIR,
     logger,
 )
-
-from services.ai_backend import AIBackend
 
 if TYPE_CHECKING:
     from services.session_store import SessionStore
@@ -70,11 +73,11 @@ class PromptService:
         self,
         session_store: SessionStore,
         message_sender: MessageSender,
-        ai_backend: AIBackend,
+        provider_factory: object,
     ) -> None:
         self._store = session_store
         self._sender = message_sender
-        self._ai = ai_backend
+        self._factory = provider_factory
 
         # Per-chat running tasks
         self._running: dict[int, asyncio.Task] = {}
@@ -97,7 +100,11 @@ class PromptService:
         if chat_id not in self._running:
             return False
         self._cancel.add(chat_id)
-        self._ai.cancel()
+        for backend in self._factory._instances.values():
+            try:
+                backend.cancel()
+            except Exception:
+                pass
         return True
 
     async def execute(
@@ -167,19 +174,23 @@ class PromptService:
         session,
         model: str,
     ) -> dict:
-        """Execute prompt via the AI backend.
+        """Execute prompt via the AI provider factory.
 
-        Delegates to self._ai.execute() — all subprocess/HTTP logic
-        lives in the backend implementation.
+        Reads per-chat settings (provider, timeout, workdir) from
+        SessionStore. Resolves the correct AI backend via the factory.
 
         Returns a dict with keys: stdout, stderr, returncode, cancelled.
         """
-        workdir = getattr(self._ai, '_workdir', '.')
-        result = await self._ai.execute(
+        provider = await self._store.get_chat_setting(chat_id, "provider", "opencode")
+        timeout_val = await self._store.get_chat_setting(chat_id, "timeout", OPENCODE_TIMEOUT)
+        workdir = await self._store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
+
+        backend = self._factory.get(provider)
+        result = await backend.execute(
             prompt=prompt,
             model=model,
             session_id=session.real_id if session else None,
-            workdir=workdir,
+            workdir=str(workdir),
         )
         return {
             "stdout": result.stdout,

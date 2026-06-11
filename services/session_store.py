@@ -310,6 +310,24 @@ class SessionStore:
             sessions[name]["title"] = title
         await self._save(data)
 
+    async def get_chat_setting(self, chat_id: int, key: str, default: object = None) -> object:
+        data = await self._load()
+        chat_data = data.get(str(chat_id), {})
+        settings = chat_data.get("settings", {})
+        return settings.get(key, default)
+
+    async def set_chat_setting(self, chat_id: int, key: str, value: object) -> None:
+        data = await self._load()
+        cid = str(chat_id)
+        chat_data = data.setdefault(cid, {})
+        settings = chat_data.setdefault("settings", {})
+        settings[key] = value
+        await self._save(data)
+
+    async def get_all_chat_settings(self, chat_id: int) -> dict:
+        data = await self._load()
+        return data.get(str(chat_id), {}).get("settings", {})
+
     async def reset_session(self, chat_id: int) -> None:
         """Reset the active session's OpenCode ID and prompt count.
 

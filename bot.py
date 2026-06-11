@@ -48,7 +48,7 @@ from handlers.commands import (
 )
 from handlers.sessions import session_command
 from handlers.admin import test_md_command, session_preview_command
-from handlers.ci import pr_command, update_command
+from handlers.ci import pr_command, update_command, wdir_command
 
 
 # ── Connection state tracking ──────────────────────────────────────────
@@ -262,6 +262,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("test_md", test_md_command))
     application.add_handler(CommandHandler("pr", pr_command))
     application.add_handler(CommandHandler("update", update_command))
+    application.add_handler(CommandHandler("wdir", wdir_command))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

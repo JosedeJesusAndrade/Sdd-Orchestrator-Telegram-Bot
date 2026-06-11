@@ -26,7 +26,7 @@ class OpenCodeCLIBackend:
             cmd_parts.extend(["--model", model])
         if session_id:
             cmd_parts.extend(["--continue", "--session", session_id])
-        cmd_parts.append(prompt)
+        cmd_parts.append(prompt.replace("\n", " "))
         
         env = os.environ.copy()
         env["NO_COLOR"] = "1"

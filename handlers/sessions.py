@@ -58,20 +58,34 @@ async def _session_new(update: Update, chat_id: int, name: str | None, container
 
 
 async def _session_list(update: Update, chat_id: int, container: AppContainer) -> None:
-    """Show all sessions for this chat."""
+    """Show all sessions — bot-managed + OpenCode-discovered, unified."""
     S = get_strings()
-    sessions = await container.session_store.list_sessions(chat_id)
+    from persistence.sessions import fetch_opencode_sessions
 
-    if not sessions:
+    # 1. Bot-managed sessions (from SessionStore / sessions.json)
+    bot_sessions = await container.session_store.list_sessions(chat_id)
+    bot_ids = {s.real_id for s in bot_sessions if s.real_id}
+
+    # 2. OpenCode-discovered sessions (from CLI / SQLite)
+    try:
+        oc_sessions = await fetch_opencode_sessions()
+    except Exception:
+        oc_sessions = []
+
+    # 3. Merge: OpenCode sessions not yet adopted
+    unadopted = [s for s in oc_sessions if s["id"] not in bot_ids]
+
+    if not bot_sessions and not unadopted:
         await update.message.reply_text(
             S.SESSION_LIST_EMPTY + " Usá /session new <nombre> para crear una."
         )
         return
 
     lines = [S.SESSION_LIST_HEADER + "\n"]
-    for s in sessions:
-        marker = "\U0001f7e2" if s.is_active else "\u26aa"
 
+    # Bot sessions first (with adoption status from OpenCode)
+    for s in bot_sessions:
+        marker = "\U0001f7e2" if s.is_active else "\u26aa"
         if s.real_id:
             id_display = s.real_id[:16] + "..."
             last_used_str = ""
@@ -92,6 +106,17 @@ async def _session_list(update: Update, chat_id: int, container: AppContainer) -
                 "{marker} {name} → (nueva, sin usar aún)".format(
                     marker=marker, name=s.name,
                 )
+            )
+
+    # OpenCode unadopted sessions
+    if unadopted:
+        lines.append("\n\u26aa *Sesiones OpenCode no adoptadas:*")
+        lines.append("_Usá /session adopt `<id>` `<nombre>` para adoptarlas._\n")
+        for oc in unadopted:
+            sid = oc["id"]
+            title = oc.get("title", sid[:16])
+            lines.append(
+                "\u26aa `{title}`\n   `{sid}`".format(title=title, sid=sid)
             )
 
     await update.message.reply_text("\n".join(lines))

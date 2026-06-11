@@ -25,6 +25,7 @@ from telegram.ext import (
 
 from config import (
     BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
+    DEFAULT_MODEL,
     OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
     OPENAI_API_KEY, OPENCODE_CMD,
     SESSIONS_PATH,
@@ -36,6 +37,9 @@ from opencode.client import query_opencode_db
 from services.session_store import SessionStore
 from services.message_sender import MessageSender
 from services.prompt_service import PromptService
+from services.opencode_cli_backend import OpenCodeCLIBackend
+from services.telegram_adapter import TelegramAdapter
+from services.container import AppContainer
 
 from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
@@ -269,9 +273,9 @@ def build_application() -> Application:
 async def run_bot() -> None:
     """Run the bot with proper signal handling for clean shutdown.
 
-    Week 2 refactor: SessionStore, MessageSender, and PromptService
-    are created here and injected as module-level attributes on bot.py
-    so handler functions can access them via lazy imports.
+    Week 3 refactor: AIBackend + BotPort protocols introduced.
+    AppContainer injected via app.bot_data["container"] (DI).
+    Handlers access services via _get_container(context).
     """
     import time
     # Set START_TIME as early as possible for /status uptime
@@ -284,23 +288,36 @@ async def run_bot() -> None:
     await app.start()
     await app.updater.start_polling()
 
-    # ── Build the service layer and inject into module scope ──────────
-    # Pattern: set attributes on this module (bot.py) so handler functions
-    # can access them via `import bot; bot.prompt_service.execute(...)`.
-    # This avoids circular imports because the import happens at call time,
-    # not module load time.
-    import bot
-
-    bot.session_store = SessionStore(SESSIONS_PATH)
-    bot.message_sender = MessageSender(app.bot)
-    bot.prompt_service = PromptService(
-        session_store=bot.session_store,
-        message_sender=bot.message_sender,
+    # ── Build the service layer and inject into PTB application context ──
+    # Pattern: create AppContainer, inject via app.bot_data["container"],
+    # so handlers access services via _get_container(context).
+    bot_port = TelegramAdapter(app.bot)
+    ai_backend = OpenCodeCLIBackend(
         opencode_cmd=OPENCODE_CMD,
         workdir=OPENCODE_WORKDIR,
         timeout=OPENCODE_TIMEOUT,
     )
-    logger.info("Service layer initialized (SessionStore + MessageSender + PromptService)")
+
+    session_store = SessionStore(SESSIONS_PATH)
+    message_sender = MessageSender(bot_port)
+    prompt_service = PromptService(
+        session_store=session_store,
+        message_sender=message_sender,
+        ai_backend=ai_backend,
+    )
+
+    container = AppContainer(
+        session_store=session_store,
+        message_sender=message_sender,
+        prompt_service=prompt_service,
+        ai_backend=ai_backend,
+        bot_port=bot_port,
+        start_time=config.START_TIME or time.time(),
+        allowed_chat_ids=ALLOWED_CHAT_IDS,
+        default_model=DEFAULT_MODEL,
+    )
+    app.bot_data["container"] = container
+    logger.info("Service layer initialized (SessionStore + MessageSender + PromptService + AppContainer)")
 
     # ── Shared shutdown event: used by both signal handler and connectivity monitor ──
     stop_event = asyncio.Event()

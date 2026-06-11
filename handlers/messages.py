@@ -1,14 +1,8 @@
 """Message handlers: text prompts and voice messages.
-
-Architecture change (Week 2):
-  The monolithic _process_prompt() has been extracted into
-  services/prompt_service.py. These handlers now only:
-    1. Validate input
-    2. Delegate to prompt_service.execute()
-    3. Handle simple error cases (already running, transcription errors)
-
-  progress_updater and _relative_time have been removed —
-  progress is now handled by the service layer.
+ 
+Architecture change (Week 2→3):
+  All handlers now access services via AppContainer from PTB context
+  instead of lazy-importing the bot module.
 """
 
 from __future__ import annotations
@@ -24,6 +18,12 @@ from config import OPENAI_API_KEY, logger
 from utils.logging import mask_chat_id
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
+from services.container import AppContainer
+
+
+def _get_container(context) -> AppContainer:
+    """Extract the typed AppContainer from PTB context."""
+    return context.application.bot_data["container"]
 
 
 async def transcribe_voice(file_path: str) -> str | None:
@@ -57,6 +57,7 @@ async def transcribe_voice(file_path: str) -> str | None:
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe and process as prompt."""
     chat_id = update.effective_chat.id
+    container = _get_container(context)
 
     voice = update.message.voice
     if not voice:
@@ -90,9 +91,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             parse_mode=ParseMode.MARKDOWN_V2,
         )
 
-        # Delegate to PromptService
-        import bot
-        await bot.prompt_service.execute(
+        # Delegate to PromptService via container
+        await container.prompt_service.execute(
             chat_id=chat_id,
             prompt_text=text,
             update_for_logging=update,
@@ -126,16 +126,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     The caller (@authorized decorator) ensures only authorized chats can use this.
     """
     chat_id = update.effective_chat.id
+    container = _get_container(context)
 
     prompt = update.message.text.strip()
     if not prompt:
         return
 
-    # Lazy-import to avoid circular dependency at module load time
-    import bot
-
     try:
-        await bot.prompt_service.execute(
+        await container.prompt_service.execute(
             chat_id=chat_id,
             prompt_text=prompt,
             update_for_logging=update,

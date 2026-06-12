@@ -4,6 +4,8 @@ import json
 import tempfile
 from pathlib import Path
 
+from config import DEFAULT_SESSION_NAME
+
 @pytest.fixture
 def tmp_sessions_json():
     """Create a temporary sessions.json for testing."""
@@ -18,7 +20,7 @@ def sample_session_data():
     """Sample sessions.json data for testing."""
     return {
         "123456789": {
-            "active": "default",
+            "active": DEFAULT_SESSION_NAME,
             "model": "deepseek/deepseek-v4-pro",
             "sessions": {
                 "default": {

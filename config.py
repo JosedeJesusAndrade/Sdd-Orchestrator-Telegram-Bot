@@ -1,14 +1,13 @@
 """Configuration for Telegram-OpenCode Bridge bot."""
 import os
 import sys
-import re
 import logging
 import logging.handlers
 from pathlib import Path
 from dotenv import load_dotenv
 
 # ─── Paths ───
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
@@ -61,8 +60,15 @@ MODEL_ALIASES = {
 }
 
 # ─── Sessions ───
-SESSION_TIMEOUT_MINUTES = 60
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"
+
+# ── Constants (extracted magic values) ──────────────────────────────────────
+DEFAULT_SESSION_NAME = "default"
+TELEGRAM_MAX_MESSAGE_LENGTH = 4000
+PROGRESS_UPDATE_INTERVAL = 5       # seconds between "procesando..." updates
+CONNECTIVITY_CHECK_INTERVAL = 30   # seconds between connectivity pings
+CONNECTIVITY_FIRST_CHECK_DELAY = 10  # seconds before first connectivity check
+INTERNAL_SUBPROCESS_TIMEOUT = 10   # seconds for opencode session list / db queries
 
 # ─── Logging ───
 LOG_DIR = Path(__file__).resolve().parent

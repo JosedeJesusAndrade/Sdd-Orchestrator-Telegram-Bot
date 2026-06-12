@@ -27,6 +27,7 @@ from config import (
     BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
     OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
     OPENAI_API_KEY,
+    CONNECTIVITY_CHECK_INTERVAL, CONNECTIVITY_FIRST_CHECK_DELAY,
     logger,
 )
 from persistence.sessions import (
@@ -207,7 +208,7 @@ async def _connectivity_monitor(app: Application, stop_event: asyncio.Event) -> 
     Uses a simple asyncio loop instead of JobQueue to avoid the
     ``python-telegram-bot[job-queue]`` dependency (APScheduler).
     """
-    await asyncio.sleep(10)  # first check after 10s
+    await asyncio.sleep(CONNECTIVITY_FIRST_CHECK_DELAY)  # first check after 10s
     while not stop_event.is_set():
         try:
             await app.bot.get_me()
@@ -220,7 +221,7 @@ async def _connectivity_monitor(app: Application, stop_event: asyncio.Event) -> 
             pass  # ignore other transient errors
 
         # Wait 30s between checks, checking stop_event every second
-        for _ in range(30):
+        for _ in range(CONNECTIVITY_CHECK_INTERVAL):
             if stop_event.is_set():
                 return
             await asyncio.sleep(1)

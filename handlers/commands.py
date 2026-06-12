@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    DEFAULT_MODEL,
+    DEFAULT_MODEL, DEFAULT_SESSION_NAME,
     MODEL_ALIASES, logger,
 )
 import config as _config
@@ -16,17 +16,15 @@ from persistence.sessions import (
 )
 from utils.logging import mask_chat_id
 from handlers import (
-    authorize, active_sessions, current_model,
+    authorized, active_sessions, current_model,
     current_process, cancel_requests, process_status,
 )
 from handlers.messages import _process_prompt, _relative_time
 
 
+@authorized
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /start from %s", mask_chat_id(chat_id))
-        return
 
     await update.message.reply_text(
         "OpenCode Bot listo.\n\n"
@@ -38,11 +36,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+@authorized
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /help from %s", mask_chat_id(chat_id))
-        return
 
     await update.message.reply_text(
         "Comandos disponibles:\n\n"
@@ -65,18 +61,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+@authorized
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /status from %s", mask_chat_id(chat_id))
-        return
 
     session = active_sessions.get(chat_id)
     smap = await load_session_map_safe()
     model = smap.get(str(chat_id), {}).get("model") or current_model.get(chat_id) or DEFAULT_MODEL
 
     if session:
-        session_name = session.get("session_name", "default")
+        session_name = session.get("session_name", DEFAULT_SESSION_NAME)
         session_id = session.get("session_id")
         if session_id:
             session_id_display = session_id[:24] + "..." if len(session_id) > 24 else session_id
@@ -120,15 +114,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+@authorized
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /new from %s", mask_chat_id(chat_id))
-        return
 
     smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
-    active_name = chat_data.get("active", "default")
+    active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
     if active_name in chat_data.get("sessions", {}):
         chat_data["sessions"][active_name]["id"] = None
         chat_data["sessions"][active_name]["prompt_count"] = 0
@@ -141,11 +133,9 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+@authorized
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /model from %s", mask_chat_id(chat_id))
-        return
 
     args = context.args
     if not args:
@@ -170,11 +160,9 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+@authorized
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /cancel from %s", mask_chat_id(chat_id))
-        return
 
     status = process_status.get(chat_id, "idle")
     if status == "cancelling":
@@ -217,11 +205,9 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\u274c Prompt cancelado")
 
 
+@authorized
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        logger.warning("Unauthorized /open from %s", mask_chat_id(chat_id))
-        return
 
     prompt = " ".join(context.args)
     if not prompt:

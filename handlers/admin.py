@@ -3,18 +3,17 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from config import logger
+from config import DEFAULT_SESSION_NAME, logger
 from persistence.sessions import load_session_map_safe, fetch_opencode_sessions
 from formatting.markdown import minimal_escape_mdv2, send_telegram_mdv2
 from utils.logging import mask_chat_id
-from handlers import authorize
+from handlers import authorized
 
 
+@authorized
 async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test command: sends a hardcoded MarkdownV2 message to verify API works."""
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        return
 
     test_msg = (
         "**bold** _italic_ `inline code`\n"
@@ -38,10 +37,9 @@ async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await context.bot.send_message(chat_id=chat_id, text=test_msg)
 
 
+@authorized
 async def session_preview_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    if not authorize(chat_id):
-        return
 
     smap = await load_session_map_safe()
     chat_sessions = smap.get(str(chat_id), {})
@@ -49,7 +47,7 @@ async def session_preview_command(update: Update, context: ContextTypes.DEFAULT_
     lines = ["\U0001f4cb *Sesiones del Bot*"]
 
     if chat_sessions.get("sessions"):
-        active_name = chat_sessions.get("active", "default")
+        active_name = chat_sessions.get("active", DEFAULT_SESSION_NAME)
         for name, info in chat_sessions["sessions"].items():
             marker = "\U0001f7e2" if name == active_name else "\u26aa"
             oc_id = info.get("id", "?")[:20] + "..."

@@ -2,6 +2,8 @@
 import re
 import logging
 
+from config import TELEGRAM_MAX_MESSAGE_LENGTH
+
 logger = logging.getLogger("opencode_bot")
 from telegram.constants import ParseMode
 
@@ -221,7 +223,7 @@ def minimal_escape_mdv2(text: str) -> str:
     return ''.join(result)
 
 
-def split_message(text: str, max_len: int = 4000) -> list[str]:
+def split_message(text: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
     """Split long text into Telegram-friendly chunks at natural boundaries.
 
     P5: Optimization opportunity — the current O(n) rfind loop could be replaced

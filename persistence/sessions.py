@@ -8,7 +8,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 
-from config import SESSION_DB, OPENCODE_CMD, logger
+from config import SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, logger
 
 # Lock to prevent race conditions on sessions.json (multiple handlers)
 session_lock = asyncio.Lock()
@@ -24,7 +24,7 @@ _opencode_sessions_cache_time: float = 0
 SESSION_LIST_CACHE_TTL = 10.0  # seconds
 
 
-def invalidate_opencode_sessions_cache():
+def invalidate_opencode_sessions_cache() -> None:
     """Invalidate the TTL cache for fetch_opencode_sessions (P4)."""
     global _opencode_sessions_cache, _opencode_sessions_cache_time
     _opencode_sessions_cache = None
@@ -41,7 +41,7 @@ def load_session_map() -> dict:
     return {}
 
 
-async def save_session_map_atomic(data: dict):
+async def save_session_map_atomic(data: dict) -> None:
     """Thread-safe, crash-safe save of session map. Invalidates cache."""
     global _session_map_cache, _session_map_cache_time
     loop = asyncio.get_running_loop()
@@ -59,11 +59,6 @@ async def save_session_map_atomic(data: dict):
         await loop.run_in_executor(None, _write)
         _session_map_cache = data.copy()
         _session_map_cache_time = time.time()
-
-
-async def save_session_map(data: dict):
-    """Alias for save_session_map_atomic (legacy compatibility)."""
-    await save_session_map_atomic(data)
 
 
 async def load_session_map_safe() -> dict:
@@ -116,7 +111,7 @@ async def fetch_opencode_sessions() -> list[dict]:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=10,
+                timeout=INTERNAL_SUBPROCESS_TIMEOUT,
             )
         )
 
@@ -148,7 +143,7 @@ async def get_chat_sessions(chat_id: int) -> dict:
 async def get_active_session_id(chat_id: int) -> str | None:
     """Get the real OpenCode session ID for the active session of a chat."""
     data = await get_chat_sessions(chat_id)
-    active_name = data.get("active", "default")
+    active_name = data.get("active", DEFAULT_SESSION_NAME)
     return data.get("sessions", {}).get(active_name, {}).get("id")
 
 
@@ -158,14 +153,14 @@ async def get_model(chat_id: int, default: str) -> str:
     return data.get("model", default)
 
 
-async def set_model(chat_id: int, model: str):
+async def set_model(chat_id: int, model: str) -> None:
     """Set the model preference for a chat."""
     smap = await load_session_map_safe()
     smap.setdefault(str(chat_id), {})["model"] = model
     await save_session_map_atomic(smap)
 
 
-async def update_session(chat_id: int, session_name: str, **fields):
+async def update_session(chat_id: int, session_name: str, **fields) -> None:
     """Update fields of a named session."""
     smap = await load_session_map_safe()
     sessions = smap.setdefault(str(chat_id), {}).setdefault("sessions", {})
@@ -174,7 +169,7 @@ async def update_session(chat_id: int, session_name: str, **fields):
     await save_session_map_atomic(smap)
 
 
-async def add_session(chat_id: int, session_name: str, real_id: str = None, title: str = ""):
+async def add_session(chat_id: int, session_name: str, real_id: str = None, title: str = "") -> None:
     """Add a new named session for a chat."""
     smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
@@ -212,6 +207,6 @@ async def delete_session(chat_id: int, name: str) -> str | None:
     real_id = sessions[name].get("id")
     del sessions[name]
     if chat_data.get("active") == name:
-        chat_data["active"] = "default"
+        chat_data["active"] = DEFAULT_SESSION_NAME
     await save_session_map_atomic(smap)
     return real_id

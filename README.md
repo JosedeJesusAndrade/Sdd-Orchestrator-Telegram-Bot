@@ -1,10 +1,6 @@
-# Telegram Bridge - Entorno Aislado
+# Telegram Bridge 
 
-## ✅ Configuración Completada
-
-El proyecto `telegram_bridge` ahora tiene su propio entorno virtual aislado de `Balanceate`.
-
-## 📁 Estructura
+##  Estructura
 
 ```
 telegram_bridge/
@@ -15,7 +11,7 @@ telegram_bridge/
 └── ...
 ```
 
-## 🚀 Uso
+##  Uso
 
 ### Opción 1: Ejecutar con el script .bat
 ```batch
@@ -35,7 +31,7 @@ python bot.py
 2. VS Code debería detectar automáticamente el entorno `.venv` del telegram_bridge
 3. Presiona F5 para ejecutar con debug
 
-## 📦 Dependencias
+##  Dependencias
 
 Las dependencias se gestionan independientemente en `telegram_bridge/requirements.txt`:
 
@@ -44,7 +40,7 @@ Las dependencias se gestionan independientemente en `telegram_bridge/requirement
 - `python-dotenv>=1.0.0` - Gestión de variables de entorno
 - `openai>=1.0.0` - Transcripción de mensajes de voz
 
-## 🔧 Mantenimiento
+##  Mantenimiento
 
 ### Instalar nuevas dependencias
 ```powershell
@@ -61,7 +57,7 @@ cd telegram_bridge
 pip install --upgrade -r requirements.txt
 ```
 
-## ⚙️ Configuración de VS Code
+##  Configuración de VS Code
 
 Para trabajar específicamente en el telegram_bridge con su entorno virtual:
 
@@ -69,11 +65,11 @@ Para trabajar específicamente en el telegram_bridge con su entorno virtual:
 2. VS Code detectará automáticamente `.venv`
 3. O manualmente selecciona el intérprete: `Ctrl+Shift+P` → "Python: Select Interpreter" → `.venv`
 
-## 🔄 Migración desde el entorno compartido
+##  Migración desde el entorno compartido
 
 El proyecto ahora está completamente aislado de `Balanceate`. Ya no depende del `.venv` o `venv` del directorio padre.
 
-## 📝 Notas
+##  Notas
 
 - El entorno virtual está excluido de git (`.gitignore`)
 - Cada desarrollador debe crear su propio `.venv` usando `python -m venv .venv`

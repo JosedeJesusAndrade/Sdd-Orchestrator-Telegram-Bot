@@ -1,9 +1,8 @@
 """Session handlers: /session new|list|switch|delete|info|discover|adopt.
-
-Architecture change (Week 2):
-  Replaced direct persistence.sessions calls with SessionStore methods.
-  Replaced send_telegram_mdv2 with MessageSender.
-  Uses lazy imports from bot.py to avoid circular dependencies.
+ 
+Architecture change (Week 2→3):
+  All handlers now access services via AppContainer from PTB context
+  instead of lazy-importing the bot module.
 """
 
 from __future__ import annotations
@@ -24,18 +23,22 @@ from utils.logging import mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.session_store import SessionExistsError, SessionNotFoundError
+from services.container import AppContainer
 
 
-async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
+def _get_container(context) -> AppContainer:
+    """Extract the typed AppContainer from PTB context."""
+    return context.application.bot_data["container"]
+
+
+async def _session_new(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Create a named session (lazy: no OpenCode call yet)."""
     if not name:
         await update.message.reply_text("Uso: /session new <nombre>")
         return
 
-    import bot
-
     try:
-        await bot.session_store.create_session(chat_id, name)
+        await container.session_store.create_session(chat_id, name)
     except SessionExistsError:
         await update.message.reply_text(
             "\u26a0\ufe0f La sesión '{name}' ya existe. "
@@ -52,11 +55,9 @@ async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
     )
 
 
-async def _session_list(update: Update, chat_id: int) -> None:
+async def _session_list(update: Update, chat_id: int, container: AppContainer) -> None:
     """Show all sessions for this chat."""
-    import bot
-
-    sessions = await bot.session_store.list_sessions(chat_id)
+    sessions = await container.session_store.list_sessions(chat_id)
 
     if not sessions:
         await update.message.reply_text(
@@ -93,16 +94,14 @@ async def _session_list(update: Update, chat_id: int) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
-async def _session_switch(update: Update, chat_id: int, name: str | None) -> None:
+async def _session_switch(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Switch active session."""
     if not name:
         await update.message.reply_text("Uso: /session switch <nombre>")
         return
 
-    import bot
-
     try:
-        await bot.session_store.switch_session(chat_id, name)
+        await container.session_store.switch_session(chat_id, name)
     except SessionNotFoundError:
         await update.message.reply_text(
             "\u274c La sesión '{name}' no existe.\n"
@@ -119,16 +118,14 @@ async def _session_switch(update: Update, chat_id: int, name: str | None) -> Non
     )
 
 
-async def _session_delete(update: Update, chat_id: int, name: str | None) -> None:
+async def _session_delete(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Delete a named session."""
     if not name:
         await update.message.reply_text("Uso: /session delete <nombre>")
         return
 
-    import bot
-
     try:
-        real_id = await bot.session_store.delete_session(chat_id, name)
+        real_id = await container.session_store.delete_session(chat_id, name)
     except SessionNotFoundError:
         await update.message.reply_text(
             "\u274c La sesión '{name}' no existe.".format(name=name)
@@ -160,14 +157,12 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
     )
 
 
-async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
+async def _session_info(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:
     """Show detailed info about a session."""
-    import bot
-
-    sessions = await bot.session_store.list_sessions(chat_id)
+    sessions = await container.session_store.list_sessions(chat_id)
 
     # Determine the target session name
-    active_session = await bot.session_store.get_active_session(chat_id)
+    active_session = await container.session_store.get_active_session(chat_id)
     target_name = name if name else (active_session.name if active_session else DEFAULT_SESSION_NAME)
 
     # Find the matching SessionInfo
@@ -240,12 +235,10 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
-async def _session_discover(update: Update, chat_id: int) -> None:
+async def _session_discover(update: Update, chat_id: int, container: AppContainer) -> None:
     """Show all OpenCode sessions with adoption status."""
     oc_sessions = await fetch_opencode_sessions()
-
-    import bot
-    sessions = await bot.session_store.list_sessions(chat_id)
+    sessions = await container.session_store.list_sessions(chat_id)
 
     # Build adoption map
     adopted_map: dict[str, str] = {}
@@ -296,11 +289,12 @@ async def _session_discover(update: Update, chat_id: int) -> None:
     msg = "\n".join(lines)
 
     # Use MessageSender for delivery
-    await bot.message_sender.send_formatted(chat_id, msg)
+    await container.message_sender.send_formatted(chat_id, msg)
 
 
 async def _session_adopt(
     update: Update, chat_id: int, real_id: str | None, name: str | None,
+    container: AppContainer,
 ) -> None:
     """Adopt an existing OpenCode session by real ID."""
     if not real_id or not name:
@@ -333,10 +327,8 @@ async def _session_adopt(
         )
         return
 
-    import bot
-
     # Check if name already exists
-    existing = await bot.session_store.list_sessions(chat_id)
+    existing = await container.session_store.list_sessions(chat_id)
     if any(s.name == name for s in existing):
         await update.message.reply_text(
             "\u26a0\ufe0f El nombre '{name}' ya existe. "
@@ -383,6 +375,7 @@ async def _session_adopt(
 async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for /session subcommands."""
     chat_id = update.effective_chat.id
+    container = _get_container(context)
 
     args = context.args
     if not args:
@@ -395,21 +388,21 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     name = args[1] if len(args) > 1 else None
 
     if subcommand == "new":
-        await _session_new(update, chat_id, name)
+        await _session_new(update, chat_id, name, container)
     elif subcommand == "list":
-        await _session_list(update, chat_id)
+        await _session_list(update, chat_id, container)
     elif subcommand == "switch":
-        await _session_switch(update, chat_id, name)
+        await _session_switch(update, chat_id, name, container)
     elif subcommand == "delete":
-        await _session_delete(update, chat_id, name)
+        await _session_delete(update, chat_id, name, container)
     elif subcommand == "info":
-        await _session_info(update, chat_id, name)
+        await _session_info(update, chat_id, name, container)
     elif subcommand == "discover":
-        await _session_discover(update, chat_id)
+        await _session_discover(update, chat_id, container)
     elif subcommand == "adopt":
         real_id = args[1] if len(args) > 1 else None
         adopt_name = args[2] if len(args) > 2 else None
-        await _session_adopt(update, chat_id, real_id, adopt_name)
+        await _session_adopt(update, chat_id, real_id, adopt_name, container)
     else:
         await update.message.reply_text(
             "Subcomando desconocido: {}. "

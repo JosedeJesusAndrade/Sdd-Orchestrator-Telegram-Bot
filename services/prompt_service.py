@@ -1,0 +1,342 @@
+"""PromptService: execute OpenCode prompts, manage output, track state.
+
+Architecture rationale:
+  The old _process_prompt() was a 273-line monolithic function inside
+  handlers/messages.py. It handled:
+    - Session sync (JSON load/save, in-memory dicts)
+    - Model resolution (3 fallback sources)
+    - Subprocess execution (Popen, timeout, cancel)
+    - Response formatting (filter, clean, escape, split)
+    - Message delivery (send, edit, fallback)
+    - Session ID capture
+
+  This violated SRP (Single Responsibility Principle) and made the code
+  untestable — you couldn't test the execution logic without a Telegram bot.
+
+  PromptService solves this by:
+    - Delegating session I/O to SessionStore
+    - Delegating message delivery to MessageSender
+    - Focusing ONLY on orchestration: build the command, run it,
+      route the output to the right delivery method
+    - Encapsulating process state (running tasks, cancel flags)
+
+  Why a class?
+    - Stateful: tracks running tasks per chat_id
+    - Injectable: SessionStore + MessageSender + config in constructor
+    - Testable: mock the subprocess and verify behavior
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import re
+import subprocess
+import time
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from config import (
+    DEFAULT_MODEL, DEFAULT_SESSION_NAME,
+    OPENCODE_TIMEOUT, logger,
+)
+
+if TYPE_CHECKING:
+    from services.session_store import SessionStore
+    from services.message_sender import MessageSender
+
+logger = logging.getLogger(__name__)
+
+
+class PromptAlreadyRunningError(Exception):
+    """Raised when a prompt is already running for a chat."""
+
+
+class PromptService:
+    """Orchestrate the lifecycle of an OpenCode prompt execution.
+
+    Responsibilities:
+      1. Check if a prompt is already running (no double-execution)
+      2. Resolve model + session from SessionStore
+      3. Build and execute the opencode CLI command
+      4. Capture the session ID on first run
+      5. Format and deliver the response via MessageSender
+      6. Track prompt counts
+      7. Support cancellation
+    """
+
+    def __init__(
+        self,
+        session_store: SessionStore,
+        message_sender: MessageSender,
+        opencode_cmd: str,
+        workdir: str,
+        timeout: int = OPENCODE_TIMEOUT,
+    ) -> None:
+        self._store = session_store
+        self._sender = message_sender
+        self._cmd = opencode_cmd
+        self._workdir = workdir
+        self._timeout = timeout
+
+        # Per-chat running tasks
+        self._running: dict[int, asyncio.Task] = {}
+        # Per-chat cancel flags (set by cancel() before process terminates)
+        self._cancel: set[int] = set()
+        # Per-chat subprocess objects (for force-kill on cancel)
+        self._process: dict[int, subprocess.Popen] = {}
+
+    # ── Public API ──────────────────────────────────────────────────
+
+    def is_running(self, chat_id: int) -> bool:
+        """Check if a prompt is currently executing for this chat."""
+        return chat_id in self._running
+
+    def cancel(self, chat_id: int) -> bool:
+        """Request cancellation of a running prompt.
+
+        Returns True if there was a prompt to cancel, False otherwise.
+        Cancellation is asynchronous — the prompt may take a moment
+        to actually stop after this returns.
+        """
+        if chat_id not in self._running:
+            return False
+        self._cancel.add(chat_id)
+        proc = self._process.get(chat_id)
+        if proc is not None:
+            try:
+                # Force-kill on Windows
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                    )
+                else:
+                    proc.terminate()
+            except Exception:
+                pass
+        return True
+
+    async def execute(
+        self,
+        chat_id: int,
+        prompt_text: str,
+        update_for_logging=None,
+    ) -> str:
+        """Execute a prompt for the given chat.
+
+        This is the main entry point. It handles the full lifecycle:
+        session sync → execution → delivery → cleanup.
+
+        Args:
+            chat_id: Telegram chat ID.
+            prompt_text: The user's prompt text.
+            update_for_logging: Optional Update object for logging.
+
+        Returns:
+            The raw stdout output from OpenCode.
+
+        Raises:
+            PromptAlreadyRunningError: if a prompt is already running.
+        """
+        if chat_id in self._running:
+            raise PromptAlreadyRunningError(
+                f"Chat {chat_id} already has a running prompt"
+            )
+
+        try:
+            task = asyncio.current_task()
+            if task is not None:
+                self._running[chat_id] = task
+
+            # 1. Resolve session and model
+            session = await self._store.get_active_session(chat_id)
+            model = await self._store.get_model(chat_id)
+
+            if update_for_logging is not None:
+                self._log_prompt(chat_id, prompt_text, model)
+
+            # 2. Send "Processing..." indicator
+            proc_msg = await self._sender.send_plain(
+                chat_id, "\u23f3 OpenCode procesando..."
+            )
+
+            # 3. Execute OpenCode
+            result = await self._execute_opencode(
+                chat_id, prompt_text, session, model,
+            )
+
+            # 4. Deliver response
+            await self._deliver_response(chat_id, result, proc_msg, session)
+
+            return result["stdout"]
+
+        finally:
+            self._running.pop(chat_id, None)
+            self._cancel.discard(chat_id)
+            self._process.pop(chat_id, None)
+
+    # ── Internal: OpenCode execution ────────────────────────────────
+
+    async def _execute_opencode(
+        self,
+        chat_id: int,
+        prompt: str,
+        session,
+        model: str,
+    ) -> dict:
+        """Build the CLI command and run OpenCode as a subprocess.
+
+        Returns a dict with keys: stdout, stderr, returncode, cancelled.
+        """
+        # Build command
+        cmd_parts = [self._cmd]
+        if model:
+            cmd_parts.extend(["--model", model])
+        if session is not None and session.real_id:
+            cmd_parts.extend(["--continue", "--session", session.real_id])
+        cmd_parts.append(prompt)
+
+        # Environment: disable ANSI colors for cleaner output
+        env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_parts,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=self._workdir,
+            env=env,
+        )
+        self._process[chat_id] = proc
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self._timeout,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return {
+                "stdout": "",
+                "stderr": f"Timeout: el prompt tardó más de {self._timeout} segundos.",
+                "returncode": -1,
+                "cancelled": False,
+            }
+
+        stdout_text = stdout.decode("utf-8", errors="replace") if stdout else ""
+        stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
+
+        return {
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "returncode": proc.returncode or 0,
+            "cancelled": chat_id in self._cancel,
+        }
+
+    # ── Internal: response delivery ─────────────────────────────────
+
+    async def _deliver_response(
+        self,
+        chat_id: int,
+        result: dict,
+        proc_msg,
+        session,
+    ) -> None:
+        """Format and send the OpenCode response, or show an error."""
+        from formatting.markdown import clean_opencode_output, _assemble_response
+
+        # Handle cancellation
+        if result["cancelled"]:
+            await self._sender.edit_message(
+                chat_id, proc_msg.message_id, "\u23f9\ufe0f Cancelado."
+            )
+            return
+
+        # Handle hard errors (non-zero exit + empty stdout)
+        if result["returncode"] != 0 and not result["stdout"].strip():
+            error_text = result["stderr"] or "Unknown error"
+            await self._sender.edit_message(
+                chat_id, proc_msg.message_id,
+                f"\u274c Error: {error_text[:500]}",
+            )
+            return
+
+        # Process and format the response
+        cleaned = clean_opencode_output(result["stdout"])
+        response = _assemble_response(cleaned, result["stderr"])
+
+        if not response.strip():
+            response = "\u2705 Completado (sin output)."
+
+        # Prepend new-session header for brand-new sessions
+        if session is not None and not session.real_id and session.name:
+            response = (
+                f"\U0001f195 Nueva sesión '{session.name}' iniciada\n\n"
+                + response
+            )
+
+        # Send formatted response
+        await self._sender.send_formatted(chat_id, response)
+
+        # Edit "Processing..." to "Completed"
+        try:
+            await self._sender.edit_message(
+                chat_id, proc_msg.message_id, "\u2705 Completado."
+            )
+        except Exception:
+            pass
+
+        # Capture session ID for new sessions
+        await self._capture_session_id(chat_id, result["stdout"], session)
+
+        # Increment prompt count
+        try:
+            await self._store.increment_prompt_count(chat_id)
+        except Exception as e:
+            logger.warning("Failed to increment prompt count: %s", e)
+
+    async def _capture_session_id(
+        self,
+        chat_id: int,
+        stdout: str,
+        session,
+    ) -> None:
+        """Extract and persist the real OpenCode session ID from stdout.
+
+        After the first prompt in a new session, OpenCode assigns a
+        real session ID (e.g., ses_AbCdEf123). We capture this so
+        subsequent prompts use --continue.
+        """
+        match = re.search(r'(ses_[a-zA-Z0-9]+)', stdout)
+        if not match:
+            return
+        real_id = match.group(1)
+
+        active = await self._store.get_active_session(chat_id)
+        if active is not None and not active.real_id:
+            await self._store.update_session_id(chat_id, real_id)
+            logger.info("Captured session ID %s for chat %s", real_id, chat_id)
+
+    # ── Internal: logging ───────────────────────────────────────────
+
+    def _log_prompt(self, chat_id: int, prompt: str, model: str) -> None:
+        """Log the incoming prompt (with credential redaction)."""
+        from utils.logging import mask_chat_id
+
+        truncated = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        safe_prompt = truncated
+        for pattern in ['sk-', 'Bearer ', '-----BEGIN', 'token=', 'secret=']:
+            if pattern.lower() in safe_prompt.lower():
+                safe_prompt = "[REDACTED - possible credential]"
+                break
+        logger.info(
+            "Request from %s | prompt=%r | len=%d | model=%s",
+            mask_chat_id(chat_id),
+            safe_prompt,
+            len(prompt),
+            model,
+        )

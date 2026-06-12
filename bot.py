@@ -26,17 +26,16 @@ from telegram.ext import (
 from config import (
     BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
     OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
-    OPENAI_API_KEY,
+    OPENAI_API_KEY, OPENCODE_CMD,
+    SESSIONS_PATH,
     CONNECTIVITY_CHECK_INTERVAL, CONNECTIVITY_FIRST_CHECK_DELAY,
     logger,
 )
-from persistence.sessions import (
-    load_session_map_safe, save_session_map_atomic,
-    fetch_opencode_sessions,
-)
+from persistence.sessions import fetch_opencode_sessions
 from opencode.client import query_opencode_db
-
-from handlers import current_model
+from services.session_store import SessionStore
+from services.message_sender import MessageSender
+from services.prompt_service import PromptService
 
 from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
@@ -268,7 +267,12 @@ def build_application() -> Application:
 
 
 async def run_bot() -> None:
-    """Run the bot with proper signal handling for clean shutdown."""
+    """Run the bot with proper signal handling for clean shutdown.
+
+    Week 2 refactor: SessionStore, MessageSender, and PromptService
+    are created here and injected as module-level attributes on bot.py
+    so handler functions can access them via lazy imports.
+    """
     import time
     # Set START_TIME as early as possible for /status uptime
     import config
@@ -279,6 +283,24 @@ async def run_bot() -> None:
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+    # ── Build the service layer and inject into module scope ──────────
+    # Pattern: set attributes on this module (bot.py) so handler functions
+    # can access them via `import bot; bot.prompt_service.execute(...)`.
+    # This avoids circular imports because the import happens at call time,
+    # not module load time.
+    import bot
+
+    bot.session_store = SessionStore(SESSIONS_PATH)
+    bot.message_sender = MessageSender(app.bot)
+    bot.prompt_service = PromptService(
+        session_store=bot.session_store,
+        message_sender=bot.message_sender,
+        opencode_cmd=OPENCODE_CMD,
+        workdir=OPENCODE_WORKDIR,
+        timeout=OPENCODE_TIMEOUT,
+    )
+    logger.info("Service layer initialized (SessionStore + MessageSender + PromptService)")
 
     # ── Shared shutdown event: used by both signal handler and connectivity monitor ──
     stop_event = asyncio.Event()
@@ -312,12 +334,6 @@ async def run_bot() -> None:
     else:
         logger.info("DB schema exploration skipped (set EXPLORE_DB=1 to enable)")
 
-    smap = await load_session_map_safe()
-    for cid_str, data in smap.items():
-        if "model" in data:
-            current_model[int(cid_str)] = data["model"]
-    logger.info(f"Restored model preferences for {len(current_model)} chats from sessions.json")
-
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
     def signal_handler() -> None:
@@ -333,13 +349,6 @@ async def run_bot() -> None:
         signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
 
     await stop_event.wait()
-
-    logger.info("Persisting model preferences before shutdown...")
-    smap = await load_session_map_safe()
-    for cid, model in current_model.items():
-        smap.setdefault(str(cid), {})["model"] = model
-    await save_session_map_atomic(smap)
-    logger.info("Model preferences persisted")
 
     logger.info("Shutting down gracefully...")
     # Cancel connectivity monitor task

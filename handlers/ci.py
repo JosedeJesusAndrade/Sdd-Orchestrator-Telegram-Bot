@@ -1,8 +1,9 @@
-"""CI/CD handlers — PR creation and self-update from Telegram.
+"""CI/CD handlers — PR creation, self-update, and project switching.
 
 These commands enable the full CI/CD pipeline from the street:
   /pr <title> — Create a GitHub PR with CHANGELOG.md as body
   /update    — Self-restart bot with exit code 42 for git pull + reload
+  /wdir [project] — List or switch OpenCode workdir (project folder)
 """
 
 import asyncio
@@ -176,3 +177,91 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Exit with code 42 — the launcher.bat detects this and does git pull + restart
     os._exit(42)
+
+
+@authorized
+async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List or switch OpenCode workdir: /wdir [project]
+
+    Without args: lists all projects (folders with .git) in the parent dir.
+    With arg: switches the per-chat workdir to that project.
+    Accepts full name, partial match, or alias (lowercase, no spaces).
+    """
+    chat_id = update.effective_chat.id
+    container = _get_container(context)
+    sender = container.message_sender
+    store = container.session_store
+    args = context.args
+
+    # Default parent dir — where all projects live
+    from config import OPENCODE_WORKDIR
+    parent = Path(OPENCODE_WORKDIR)
+    if not parent.exists():
+        await sender.reply_plain(update, f"❌ Directorio no encontrado: `{parent}`")
+        return
+
+    # Discover projects (folders with .git)
+    projects: dict[str, Path] = {}
+    try:
+        for entry in sorted(parent.iterdir()):
+            if entry.is_dir() and (entry / ".git").exists():
+                name = entry.name
+                key = name.lower().replace(" ", "-")
+                # Short alias: first word or first segment before dash
+                short = key.split("-")[0]
+                projects[name] = entry
+                projects[key] = entry
+                if short not in projects:
+                    projects[short] = entry
+    except PermissionError:
+        await sender.reply_plain(update, "❌ Sin permisos para listar directorios.")
+        return
+
+    if not projects:
+        await sender.reply_plain(update, "⚠️ No se encontraron proyectos con `.git` en el directorio.")
+        return
+
+    # Get current workdir
+    current = await store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
+    current_path = Path(current)
+
+    if not args:
+        # List all projects with current marked
+        seen = set()
+        lines = ["⚙️ *Proyectos disponibles:*\n"]
+        for entry in sorted(parent.iterdir()):
+            if entry.is_dir() and (entry / ".git").exists():
+                name = entry.name
+                if name in seen:
+                    continue
+                seen.add(name)
+                marker = "🟢" if str(entry) == str(current_path) else "  "
+                alias = name.lower().replace(" ", "-").split("-")[0]
+                lines.append(f"{marker} `{alias}` → {name}")
+        await sender.reply_plain(update, "\n".join(lines))
+        return
+
+    # Switch to project
+    query = " ".join(args).lower().replace(" ", "-")
+    target = projects.get(query)
+
+    if target is None:
+        # Try partial match
+        matches = [k for k in projects if k.startswith(query)]
+        if len(matches) == 1:
+            target = projects[matches[0]]
+        elif len(matches) > 1:
+            match_list = ", ".join(matches[:5])
+            await sender.reply_plain(update, f"⚠️ Múltiples coincidencias: {match_list}. Sé más específico.")
+            return
+        else:
+            await sender.reply_plain(update, f"❌ Proyecto no encontrado: `{query}`")
+            return
+
+    workdir = str(target)
+    await store.set_chat_setting(chat_id, "workdir", workdir)
+    await sender.reply_plain(
+        update,
+        f"✅ Workdir cambiado a:\n`{workdir}`\n\n"
+        f"El próximo prompt usará este proyecto."
+    )

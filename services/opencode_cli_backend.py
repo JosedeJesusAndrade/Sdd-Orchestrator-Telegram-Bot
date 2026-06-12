@@ -21,7 +21,7 @@ class OpenCodeCLIBackend:
     async def execute(
         self, prompt: str, model: str, session_id: str | None, workdir: str,
     ) -> AIBackendResult:
-        cmd_parts = [self._cmd]
+        cmd_parts = [self._cmd, "run"]
         if model:
             cmd_parts.extend(["--model", model])
         if session_id:

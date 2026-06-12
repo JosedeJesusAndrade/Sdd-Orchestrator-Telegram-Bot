@@ -5,7 +5,6 @@ import logging
 from config import TELEGRAM_MAX_MESSAGE_LENGTH
 
 logger = logging.getLogger("opencode_bot")
-from telegram.constants import ParseMode
 
 
 def _filter_stderr(stderr: str) -> str:
@@ -259,25 +258,6 @@ def split_message(text: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list
         idx += 1
 
     return parts
-
-
-async def send_telegram_mdv2(bot, chat_id: int, text: str) -> None:
-    """Send a message with MarkdownV2 formatting. Falls back to plain text."""
-    try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-    except Exception as e:
-        logger.debug(f"MarkdownV2 failed for chat {chat_id}: {e}")
-        # B5: Strip markdown formatting before plain-text fallback
-        clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
-        clean = clean.replace('\\', '')
-        try:
-            await bot.send_message(chat_id=chat_id, text=clean)
-        except Exception as e2:
-            logger.error(f"Failed to send message to {chat_id}: {e2}")
 
 
 def _assemble_response(raw_stdout: str, raw_stderr: str) -> str:

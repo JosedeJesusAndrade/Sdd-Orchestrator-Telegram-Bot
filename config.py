@@ -61,6 +61,7 @@ MODEL_ALIASES = {
 
 # ─── Sessions ───
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"
+SESSIONS_PATH = SESSION_DB  # alias for SessionStore
 
 # ── Constants (extracted magic values) ──────────────────────────────────────
 DEFAULT_SESSION_NAME = "default"

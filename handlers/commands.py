@@ -15,13 +15,14 @@ from telegram.ext import ContextTypes
 
 from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME,
-    MODEL_ALIASES, logger,
+    MODEL_ALIASES, resolve_model, logger,
 )
 from utils.logging import mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
 from services.container import AppContainer
+from locales import get_strings
 
 
 def _get_container(context) -> AppContainer:
@@ -167,23 +168,16 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat_id = update.effective_chat.id
     args = context.args
     container = _get_container(context)
+    S = get_strings()
 
     if not args:
         model = await container.session_store.get_model(chat_id)
-        await update.message.reply_text("Modelo actual: {}".format(model))
+        await update.message.reply_text(S.MODEL_CURRENT.format(model=model))
         return
 
-    choice = args[0].lower()
-    model_value = MODEL_ALIASES.get(choice)
-    if model_value:
-        await container.session_store.set_model(chat_id, model_value)
-        await update.message.reply_text("Modelo cambiado a {}".format(model_value))
-    else:
-        model = await container.session_store.get_model(chat_id)
-        await update.message.reply_text(
-            "Uso: /model pro | /model flash\n"
-            "Modelo actual: {}".format(model)
-        )
+    model_value = resolve_model(args[0].lower())
+    await container.session_store.set_model(chat_id, model_value)
+    await update.message.reply_text(S.MODEL_CHANGED.format(model=model_value))
 
 
 @authorized
@@ -191,9 +185,10 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Cancel a running prompt using PromptService."""
     chat_id = update.effective_chat.id
     container = _get_container(context)
+    S = get_strings()
 
     if not container.prompt_service.is_running(chat_id):
-        await update.message.reply_text("No hay ningún prompt en ejecución.")
+        await update.message.reply_text(S.CANCEL_NO_PROMPT)
         return
 
     cancelled = container.prompt_service.cancel(chat_id)
@@ -201,9 +196,9 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(
             "Prompt cancelled for %s", mask_chat_id(chat_id),
         )
-        await update.message.reply_text("\u274c Prompt cancelado")
+        await update.message.reply_text(S.CANCEL_DONE)
     else:
-        await update.message.reply_text("No hay ningún prompt en ejecución.")
+        await update.message.reply_text(S.CANCEL_NO_PROMPT)
 
 
 @authorized
@@ -211,10 +206,11 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Execute a prompt via /open <text> using PromptService."""
     chat_id = update.effective_chat.id
     container = _get_container(context)
+    S = get_strings()
 
     prompt = " ".join(context.args)
     if not prompt:
-        await update.message.reply_text("Uso: /open <prompt>")
+        await update.message.reply_text(S.OPEN_USAGE)
         return
 
     try:
@@ -224,6 +220,56 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             update_for_logging=update,
         )
     except PromptAlreadyRunningError:
-        await update.message.reply_text(
-            "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
-        )
+        await update.message.reply_text(S.OPEN_BUSY)
+
+
+@authorized
+async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args
+    container = _get_container(context)
+    store = container.session_store
+    from config import DEFAULT_MODEL, OPENCODE_TIMEOUT, OPENCODE_WORKDIR
+    S = get_strings()
+    
+    if not args:
+        settings = await store.get_all_chat_settings(chat_id)
+        model = settings.get("model", DEFAULT_MODEL)
+        timeout = settings.get("timeout", OPENCODE_TIMEOUT)
+        workdir = settings.get("workdir", OPENCODE_WORKDIR)
+        provider = settings.get("provider", "opencode")
+        lines = [S.CONFIG_HEADER + "\n"]
+        lines.append(f"  modelo: `{model}`")
+        lines.append(f"  timeout: `{timeout}s`")
+        lines.append(f"  workdir: `{workdir}`")
+        lines.append(f"  provider: `{provider}`")
+        await update.message.reply_text("\n".join(lines))
+        return
+    
+    key = args[0].lower()
+    if key not in ("model", "timeout", "workdir", "provider"):
+        await update.message.reply_text(S.CONFIG_UNKNOWN_KEY.format(key=key))
+        return
+    
+    if len(args) < 2:
+        default_map = {"model": DEFAULT_MODEL, "timeout": OPENCODE_TIMEOUT, "workdir": OPENCODE_WORKDIR, "provider": "opencode"}
+        value = await store.get_chat_setting(chat_id, key, default_map[key])
+        await update.message.reply_text(f"{key} = `{value}`")
+        return
+    
+    value = args[1]
+    if key == "model":
+        from config import resolve_model
+        value = resolve_model(value)
+    elif key == "timeout":
+        try:
+            value = int(value)
+        except ValueError:
+            await update.message.reply_text(S.CONFIG_INVALID_TIMEOUT)
+            return
+        await store.set_chat_setting(chat_id, key, value)
+        await update.message.reply_text(S.CONFIG_TIMEOUT_SET.format(value=value))
+        return
+    
+    await store.set_chat_setting(chat_id, key, value)
+    await update.message.reply_text(S.CONFIG_SET.format(key=key, value=value))

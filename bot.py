@@ -44,7 +44,7 @@ from services.container import AppContainer
 from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
     start_command, help_command, status_command,
-    model_command, cancel_command, new_command, open_command,
+    model_command, cancel_command, new_command, open_command, config_command,
 )
 from handlers.sessions import session_command
 from handlers.admin import test_md_command, session_preview_command
@@ -253,6 +253,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("new", new_command))
     application.add_handler(CommandHandler("model", model_command))
+    application.add_handler(CommandHandler("config", config_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("session_preview", session_preview_command))
     application.add_handler(CommandHandler("session", session_command))
@@ -292,25 +293,28 @@ async def run_bot() -> None:
     # Pattern: create AppContainer, inject via app.bot_data["container"],
     # so handlers access services via _get_container(context).
     bot_port = TelegramAdapter(app.bot)
-    ai_backend = OpenCodeCLIBackend(
-        opencode_cmd=OPENCODE_CMD,
-        workdir=OPENCODE_WORKDIR,
-        timeout=OPENCODE_TIMEOUT,
-    )
+
+    from services.ai_provider_factory import AIProviderFactory
+    from services.opencode_cli_backend import OpenCodeCLIBackend
+
+    provider_factory = AIProviderFactory(default_provider="opencode")
+    provider_factory.register("opencode", OpenCodeCLIBackend)
+    # Eagerly create the default backend so constructor args are passed
+    provider_factory.get("opencode", opencode_cmd=OPENCODE_CMD, workdir=OPENCODE_WORKDIR, timeout=OPENCODE_TIMEOUT)
 
     session_store = SessionStore(SESSIONS_PATH)
     message_sender = MessageSender(bot_port)
     prompt_service = PromptService(
         session_store=session_store,
         message_sender=message_sender,
-        ai_backend=ai_backend,
+        provider_factory=provider_factory,
     )
 
     container = AppContainer(
         session_store=session_store,
         message_sender=message_sender,
         prompt_service=prompt_service,
-        ai_backend=ai_backend,
+        provider_factory=provider_factory,
         bot_port=bot_port,
         start_time=config.START_TIME or time.time(),
         allowed_chat_ids=ALLOWED_CHAT_IDS,

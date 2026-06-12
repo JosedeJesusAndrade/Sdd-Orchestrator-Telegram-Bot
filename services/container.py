@@ -13,7 +13,7 @@ class AppContainer:
     session_store: object   # SessionStore (avoids circular import)
     message_sender: object  # MessageSender
     prompt_service: object  # PromptService
-    ai_backend: object      # AIBackend
+    provider_factory: object   # AIProviderFactory
     bot_port: object        # BotPort
     start_time: float
     allowed_chat_ids: list[int]

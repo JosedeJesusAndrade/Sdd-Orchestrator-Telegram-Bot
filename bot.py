@@ -45,6 +45,7 @@ from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
     start_command, help_command, status_command,
     model_command, cancel_command, new_command, open_command, config_command,
+    health_command,
 )
 from handlers.sessions import session_command
 from handlers.admin import test_md_command, session_preview_command
@@ -255,6 +256,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("new", new_command))
     application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("config", config_command))
+    application.add_handler(CommandHandler("health", health_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("session_preview", session_preview_command))
     application.add_handler(CommandHandler("session", session_command))

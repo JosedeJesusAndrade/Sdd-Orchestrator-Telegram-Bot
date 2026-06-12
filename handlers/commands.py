@@ -273,3 +273,64 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     await store.set_chat_setting(chat_id, key, value)
     await update.message.reply_text(S.CONFIG_SET.format(key=key, value=value))
+
+
+@authorized
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Health check: /health — versión, uptime, conectividad, sesiones."""
+    import sys
+    import re
+    from pathlib import Path
+    
+    container = _get_container(context)
+    chat_id = update.effective_chat.id
+    sender = container.message_sender
+    store = container.session_store
+    
+    # Version from pyproject.toml
+    try:
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        content = pyproject.read_text(encoding="utf-8")
+        vm = re.search(r'version\s*=\s*"([^"]+)"', content)
+        version = vm.group(1) if vm else "?"
+    except Exception:
+        version = "?"
+    
+    # Uptime
+    uptime_s = int(time.time() - container.start_time)
+    h, m = divmod(uptime_s, 3600)
+    m, s = divmod(m, 60)
+    
+    # Connectivity
+    try:
+        me = await container.bot_port.get_me()
+        bot_user = me.get("username", "?")
+        connected = "✅ Conectado"
+    except Exception:
+        bot_user = "?"
+        connected = "❌ Sin conexión"
+    
+    # OpenCode sessions
+    try:
+        from persistence.sessions import fetch_opencode_sessions
+        oc = await fetch_opencode_sessions()
+        oc_count = len(oc)
+    except Exception:
+        oc_count = "?"
+    
+    # Per-chat info
+    settings = await store.get_all_chat_settings(chat_id)
+    workdir = settings.get("workdir", "default")
+    model = await store.get_model(chat_id)
+    
+    lines = [
+        "🩺 *Health Check*\n",
+        f"📦 v{version}",
+        f"🤖 @{bot_user} | {connected}",
+        f"⏱️ Uptime: {h}h {m}m {s}s",
+        f"🐍 Python {sys.version_info.major}.{sys.version_info.minor}",
+        f"💾 Sesiones OpenCode: {oc_count}",
+        f"📁 Workdir: `{workdir}`",
+        f"🧠 Modelo: `{model}`",
+    ]
+    await sender.reply_plain(update, "\n".join(lines))

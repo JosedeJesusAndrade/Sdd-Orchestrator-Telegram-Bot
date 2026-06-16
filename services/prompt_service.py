@@ -1,5 +1,5 @@
 """PromptService: execute OpenCode prompts, manage output, track state.
-
+  
 Architecture rationale:
   The old _process_prompt() was a 273-line monolithic function inside
   handlers/messages.py. It handled:
@@ -22,24 +22,27 @@ Architecture rationale:
 
   Why a class?
     - Stateful: tracks running tasks per chat_id
-    - Injectable: SessionStore + MessageSender + config in constructor
-    - Testable: mock the subprocess and verify behavior
+    - Injectable: SessionStore + MessageSender + AIProviderFactory in constructor
+    - Testable: mock the backend and verify behavior
+
+  Week 4: AIProviderFactory replaces direct AIBackend. Per-chat settings
+  (provider, timeout, workdir) read from SessionStore. Factory resolves
+  the correct backend per provider.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
-import subprocess
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME,
-    OPENCODE_TIMEOUT, logger,
+    OPENCODE_TIMEOUT, OPENCODE_WORKDIR,
+    logger,
 )
 
 if TYPE_CHECKING:
@@ -70,22 +73,16 @@ class PromptService:
         self,
         session_store: SessionStore,
         message_sender: MessageSender,
-        opencode_cmd: str,
-        workdir: str,
-        timeout: int = OPENCODE_TIMEOUT,
+        provider_factory: object,
     ) -> None:
         self._store = session_store
         self._sender = message_sender
-        self._cmd = opencode_cmd
-        self._workdir = workdir
-        self._timeout = timeout
+        self._factory = provider_factory
 
         # Per-chat running tasks
         self._running: dict[int, asyncio.Task] = {}
         # Per-chat cancel flags (set by cancel() before process terminates)
         self._cancel: set[int] = set()
-        # Per-chat subprocess objects (for force-kill on cancel)
-        self._process: dict[int, subprocess.Popen] = {}
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -103,17 +100,9 @@ class PromptService:
         if chat_id not in self._running:
             return False
         self._cancel.add(chat_id)
-        proc = self._process.get(chat_id)
-        if proc is not None:
+        for backend in self._factory._instances.values():
             try:
-                # Force-kill on Windows
-                if os.name == "nt":
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True,
-                    )
-                else:
-                    proc.terminate()
+                backend.cancel()
             except Exception:
                 pass
         return True
@@ -162,8 +151,8 @@ class PromptService:
                 chat_id, "\u23f3 OpenCode procesando..."
             )
 
-            # 3. Execute OpenCode
-            result = await self._execute_opencode(
+            # 3. Execute OpenCode via AI backend
+            result = await self._execute_prompt(
                 chat_id, prompt_text, session, model,
             )
 
@@ -175,66 +164,39 @@ class PromptService:
         finally:
             self._running.pop(chat_id, None)
             self._cancel.discard(chat_id)
-            self._process.pop(chat_id, None)
 
-    # ── Internal: OpenCode execution ────────────────────────────────
+    # ── Internal: AI backend execution ──────────────────────────────
 
-    async def _execute_opencode(
+    async def _execute_prompt(
         self,
         chat_id: int,
         prompt: str,
         session,
         model: str,
     ) -> dict:
-        """Build the CLI command and run OpenCode as a subprocess.
+        """Execute prompt via the AI provider factory.
+
+        Reads per-chat settings (provider, timeout, workdir) from
+        SessionStore. Resolves the correct AI backend via the factory.
 
         Returns a dict with keys: stdout, stderr, returncode, cancelled.
         """
-        # Build command
-        cmd_parts = [self._cmd]
-        if model:
-            cmd_parts.extend(["--model", model])
-        if session is not None and session.real_id:
-            cmd_parts.extend(["--continue", "--session", session.real_id])
-        cmd_parts.append(prompt)
+        provider = await self._store.get_chat_setting(chat_id, "provider", "opencode")
+        timeout_val = await self._store.get_chat_setting(chat_id, "timeout", OPENCODE_TIMEOUT)
+        workdir = await self._store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
 
-        # Environment: disable ANSI colors for cleaner output
-        env = os.environ.copy()
-        env["NO_COLOR"] = "1"
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd_parts,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=self._workdir,
-            env=env,
+        backend = self._factory.get(provider)
+        result = await backend.execute(
+            prompt=prompt,
+            model=model,
+            session_id=session.real_id if session else None,
+            workdir=str(workdir),
         )
-        self._process[chat_id] = proc
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout,
-            )
-        except asyncio.TimeoutError:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            return {
-                "stdout": "",
-                "stderr": f"Timeout: el prompt tardó más de {self._timeout} segundos.",
-                "returncode": -1,
-                "cancelled": False,
-            }
-
-        stdout_text = stdout.decode("utf-8", errors="replace") if stdout else ""
-        stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
-
         return {
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-            "returncode": proc.returncode or 0,
-            "cancelled": chat_id in self._cancel,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "returncode": result.returncode,
+            "cancelled": chat_id in self._cancel or result.cancelled,
         }
 
     # ── Internal: response delivery ─────────────────────────────────
@@ -256,9 +218,13 @@ class PromptService:
             )
             return
 
-        # Handle hard errors (non-zero exit + empty stdout)
-        if result["returncode"] != 0 and not result["stdout"].strip():
-            error_text = result["stderr"] or "Unknown error"
+        # Handle hard errors (non-zero exit + empty stdout, or errors via stderr)
+        has_error = (
+            result["returncode"] != 0
+            or (result["stderr"] and not result["stdout"].strip())
+        )
+        if has_error:
+            error_text = result["stderr"] or result["stdout"] or "Unknown error"
             await self._sender.edit_message(
                 chat_id, proc_msg.message_id,
                 f"\u274c Error: {error_text[:500]}",
@@ -270,7 +236,10 @@ class PromptService:
         response = _assemble_response(cleaned, result["stderr"])
 
         if not response.strip():
-            response = "\u2705 Completado (sin output)."
+            if result["returncode"] != 0:
+                response = f"\u274c Error (c\u00f3digo {result['returncode']}): sin output."
+            else:
+                response = "\u2705 Completado (sin output)."
 
         # Prepend new-session header for brand-new sessions
         if session is not None and not session.real_id and session.name:
@@ -279,16 +248,23 @@ class PromptService:
                 + response
             )
 
-        # Send formatted response
-        await self._sender.send_formatted(chat_id, response)
+        # Track whether we actually delivered content
+        is_success = result["returncode"] == 0
+        response_sent = False
 
-        # Edit "Processing..." to "Completed"
-        try:
-            await self._sender.edit_message(
-                chat_id, proc_msg.message_id, "\u2705 Completado."
-            )
-        except Exception:
-            pass
+        # Send formatted response
+        sent = await self._sender.send_formatted(chat_id, response)
+        if sent:
+            response_sent = True
+
+        # Edit "Processing..." to "Completed" only if successful
+        if response_sent and is_success:
+            try:
+                await self._sender.edit_message(
+                    chat_id, proc_msg.message_id, "\u2705 Completado."
+                )
+            except Exception:
+                pass
 
         # Capture session ID for new sessions
         await self._capture_session_id(chat_id, result["stdout"], session)

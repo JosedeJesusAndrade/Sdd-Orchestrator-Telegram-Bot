@@ -1,5 +1,5 @@
 """MessageSender: unified Telegram message delivery with formatting support.
-
+ 
 Architecture rationale:
   Previously, every handler called `send_telegram_mdv2` (formatting/markdown.py)
   directly. That function:
@@ -12,16 +12,16 @@ Architecture rationale:
   `sender.send_formatted(chat_id, text)`.
 
   Why a class (not functions)?
-    - Holds the Bot instance, avoiding repeated param passing
-    - Testable: inject a mock Bot
+    - Holds the BotPort instance, avoiding repeated param passing
+    - Testable: inject a mock BotPort
     - Single place for logging/error handling policy
 """
 
 from __future__ import annotations
 
 import logging
-from telegram import Bot, Update
-from telegram.constants import ParseMode
+from telegram import Update
+from services.bot_port import BotPort, MessageInfo
 from formatting.markdown import split_message
 
 logger = logging.getLogger(__name__)
@@ -35,28 +35,28 @@ class MessageSender:
     calling context.bot.send_message() directly.
     """
 
-    def __init__(self, bot: Bot) -> None:
-        """Initialize with a telegram.Bot instance.
+    def __init__(self, bot: BotPort) -> None:
+        """Initialize with a BotPort implementation.
 
         Args:
-            bot: The bot instance from the telegram Application.
+            bot: A BotPort implementation (e.g., TelegramAdapter).
         """
         self._bot = bot
 
-    async def send_formatted(self, chat_id: int, text: str) -> list:
+    async def send_formatted(self, chat_id: int, text: str) -> list[MessageInfo]:
         """Send text with MarkdownV2 formatting.
 
         Auto-splits long messages. Falls back to plain text if MDV2 fails.
-        Returns list of sent Message objects (empty if all failed).
+        Returns list of sent MessageInfo objects (empty if all failed).
         """
-        messages = []
+        messages: list[MessageInfo] = []
         for fragment in split_message(text):
             msg = await self._send_mdv2_with_fallback(chat_id, fragment)
             if msg is not None:
                 messages.append(msg)
         return messages
 
-    async def send_plain(self, chat_id: int, text: str):
+    async def send_plain(self, chat_id: int, text: str) -> MessageInfo | None:
         """Send a plain text message (no formatting, no escaping)."""
         try:
             return await self._bot.send_message(chat_id=chat_id, text=text)
@@ -64,7 +64,9 @@ class MessageSender:
             logger.error("Failed to send plain message to %s: %s", chat_id, e)
             return None
 
-    async def edit_message(self, chat_id: int, message_id: int, text: str):
+    async def edit_message(
+        self, chat_id: int, message_id: int, text: str,
+    ) -> MessageInfo | None:
         """Edit an existing message. Silently deletes on failure.
 
         Why delete on edit failure? Telegram sometimes rejects edits
@@ -84,17 +86,19 @@ class MessageSender:
                 pass
             return None
 
-    async def reply_formatted(self, update: Update, text: str) -> list:
+    async def reply_formatted(self, update: Update, text: str) -> list[MessageInfo]:
         """Reply to the message in the update with formatted text."""
         return await self.send_formatted(update.effective_chat.id, text)
 
-    async def reply_plain(self, update: Update, text: str):
+    async def reply_plain(self, update: Update, text: str) -> MessageInfo | None:
         """Reply to the message in the update with plain text."""
         return await self.send_plain(update.effective_chat.id, text)
 
     # ── Internal ────────────────────────────────────────────────────
 
-    async def _send_mdv2_with_fallback(self, chat_id: int, text: str):
+    async def _send_mdv2_with_fallback(
+        self, chat_id: int, text: str,
+    ) -> MessageInfo | None:
         """Try MarkdownV2, fall back to stripped plain text.
 
         Telegram's MarkdownV2 parser is strict — a single unescaped character
@@ -110,11 +114,10 @@ class MessageSender:
             return await self._bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode="MarkdownV2",
             )
         except Exception:
             clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
-            clean = clean.replace('\\', '')
             try:
                 return await self._bot.send_message(chat_id=chat_id, text=clean)
             except Exception as e:

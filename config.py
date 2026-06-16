@@ -53,11 +53,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # ─── Models ───
 DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
 MODEL_ALIASES = {
-    "pro": "deepseek/deepseek-v4-pro",
-    "flash": "deepseek/deepseek-v4-flash",
-    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
-    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    "deepseek": {
+        "pro": "deepseek/deepseek-v4-pro",
+        "flash": "deepseek/deepseek-v4-flash",
+        "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+        "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    },
 }
+
+def resolve_model(alias_or_full: str) -> str:
+    for provider, aliases in MODEL_ALIASES.items():
+        if alias_or_full in aliases:
+            return aliases[alias_or_full]
+    return alias_or_full
 
 # ─── Sessions ───
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"

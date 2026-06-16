@@ -25,6 +25,7 @@ from telegram.ext import (
 
 from config import (
     BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
+    DEFAULT_MODEL,
     OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
     OPENAI_API_KEY, OPENCODE_CMD,
     SESSIONS_PATH,
@@ -36,14 +37,19 @@ from opencode.client import query_opencode_db
 from services.session_store import SessionStore
 from services.message_sender import MessageSender
 from services.prompt_service import PromptService
+from services.opencode_cli_backend import OpenCodeCLIBackend
+from services.telegram_adapter import TelegramAdapter
+from services.container import AppContainer
 
 from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
     start_command, help_command, status_command,
-    model_command, cancel_command, new_command, open_command,
+    model_command, cancel_command, new_command, open_command, config_command,
+    health_command,
 )
 from handlers.sessions import session_command
 from handlers.admin import test_md_command, session_preview_command
+from handlers.ci import pr_command, update_command, wdir_command
 
 
 # ── Connection state tracking ──────────────────────────────────────────
@@ -249,11 +255,16 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("new", new_command))
     application.add_handler(CommandHandler("model", model_command))
+    application.add_handler(CommandHandler("config", config_command))
+    application.add_handler(CommandHandler("health", health_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("session_preview", session_preview_command))
     application.add_handler(CommandHandler("session", session_command))
     application.add_handler(CommandHandler("open", open_command))
     application.add_handler(CommandHandler("test_md", test_md_command))
+    application.add_handler(CommandHandler("pr", pr_command))
+    application.add_handler(CommandHandler("update", update_command))
+    application.add_handler(CommandHandler("wdir", wdir_command))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
@@ -269,9 +280,9 @@ def build_application() -> Application:
 async def run_bot() -> None:
     """Run the bot with proper signal handling for clean shutdown.
 
-    Week 2 refactor: SessionStore, MessageSender, and PromptService
-    are created here and injected as module-level attributes on bot.py
-    so handler functions can access them via lazy imports.
+    Week 3 refactor: AIBackend + BotPort protocols introduced.
+    AppContainer injected via app.bot_data["container"] (DI).
+    Handlers access services via _get_container(context).
     """
     import time
     # Set START_TIME as early as possible for /status uptime
@@ -284,23 +295,39 @@ async def run_bot() -> None:
     await app.start()
     await app.updater.start_polling()
 
-    # ── Build the service layer and inject into module scope ──────────
-    # Pattern: set attributes on this module (bot.py) so handler functions
-    # can access them via `import bot; bot.prompt_service.execute(...)`.
-    # This avoids circular imports because the import happens at call time,
-    # not module load time.
-    import bot
+    # ── Build the service layer and inject into PTB application context ──
+    # Pattern: create AppContainer, inject via app.bot_data["container"],
+    # so handlers access services via _get_container(context).
+    bot_port = TelegramAdapter(app.bot)
 
-    bot.session_store = SessionStore(SESSIONS_PATH)
-    bot.message_sender = MessageSender(app.bot)
-    bot.prompt_service = PromptService(
-        session_store=bot.session_store,
-        message_sender=bot.message_sender,
-        opencode_cmd=OPENCODE_CMD,
-        workdir=OPENCODE_WORKDIR,
-        timeout=OPENCODE_TIMEOUT,
+    from services.ai_provider_factory import AIProviderFactory
+    from services.opencode_cli_backend import OpenCodeCLIBackend
+
+    provider_factory = AIProviderFactory(default_provider="opencode")
+    provider_factory.register("opencode", OpenCodeCLIBackend)
+    # Eagerly create the default backend so constructor args are passed
+    provider_factory.get("opencode", opencode_cmd=OPENCODE_CMD, workdir=OPENCODE_WORKDIR, timeout=OPENCODE_TIMEOUT)
+
+    session_store = SessionStore(SESSIONS_PATH)
+    message_sender = MessageSender(bot_port)
+    prompt_service = PromptService(
+        session_store=session_store,
+        message_sender=message_sender,
+        provider_factory=provider_factory,
     )
-    logger.info("Service layer initialized (SessionStore + MessageSender + PromptService)")
+
+    container = AppContainer(
+        session_store=session_store,
+        message_sender=message_sender,
+        prompt_service=prompt_service,
+        provider_factory=provider_factory,
+        bot_port=bot_port,
+        start_time=config.START_TIME or time.time(),
+        allowed_chat_ids=ALLOWED_CHAT_IDS,
+        default_model=DEFAULT_MODEL,
+    )
+    app.bot_data["container"] = container
+    logger.info("Service layer initialized (SessionStore + MessageSender + PromptService + AppContainer)")
 
     # ── Shared shutdown event: used by both signal handler and connectivity monitor ──
     stop_event = asyncio.Event()

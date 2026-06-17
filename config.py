@@ -71,7 +71,7 @@ def resolve_model(alias_or_full: str) -> str:
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"
 SESSIONS_PATH = SESSION_DB  # alias for SessionStore
 
-# ── Constants (extracted magic values) ──────────────────────────────────────
+# ── Constants  ──────────────────────────────────────
 DEFAULT_SESSION_NAME = "default"
 TELEGRAM_MAX_MESSAGE_LENGTH = 4000
 PROGRESS_UPDATE_INTERVAL = 5       # seconds between "procesando..." updates

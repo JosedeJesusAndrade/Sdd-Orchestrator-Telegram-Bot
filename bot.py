@@ -363,6 +363,16 @@ async def run_bot() -> None:
 
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
+    # ── Startup notification to all allowed chats ──────────────────────
+    for cid in ALLOWED_CHAT_IDS:
+        try:
+            await container.message_sender.send_plain(
+                cid, "Hola, estoy activo y listo \U0001fae1"
+            )
+            logger.info("Startup notification sent to chat %s", cid)
+        except Exception as e:
+            logger.warning("Failed to notify chat %s on startup: %s", cid, e)
+
     def signal_handler() -> None:
         logger.info("Received shutdown signal...")
         stop_event.set()

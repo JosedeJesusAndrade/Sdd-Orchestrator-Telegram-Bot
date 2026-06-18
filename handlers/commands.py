@@ -14,7 +14,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    DEFAULT_MODEL, DEFAULT_SESSION_NAME,
+    DEFAULT_MODEL, DEFAULT_SESSION_NAME, CONTAINER_KEY,
     MODEL_ALIASES, resolve_model, logger,
 )
 from utils.logging import mask_chat_id
@@ -27,7 +27,7 @@ from locales import get_strings
 
 def _get_container(context) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data["container"]
+    return context.application.bot_data[CONTAINER_KEY]
 
 
 @authorized

@@ -151,6 +151,13 @@ class PromptService:
                 chat_id, "\u23f3 OpenCode procesando..."
             )
 
+            # Check if cancelled during session sync (before backend execution)
+            if chat_id in self._cancel:
+                await self._sender.edit_message(
+                    chat_id, proc_msg.message_id, "\u23f9\ufe0f Cancelado."
+                )
+                return ""
+
             # 3. Execute OpenCode via AI backend
             result = await self._execute_prompt(
                 chat_id, prompt_text, session, model,
@@ -186,6 +193,14 @@ class PromptService:
         workdir = await self._store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
 
         backend = self._factory.get(provider)
+
+        # Check if cancelled during settings resolution (before subprocess)
+        if chat_id in self._cancel:
+            return {
+                "stdout": "", "stderr": "", "returncode": 0,
+                "cancelled": True,
+            }
+
         result = await backend.execute(
             prompt=prompt,
             model=model,

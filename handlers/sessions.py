@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, logger
+from config import OPENCODE_CMD, DEFAULT_SESSION_NAME, CONTAINER_KEY, INTERNAL_SUBPROCESS_TIMEOUT, logger
 from persistence.sessions import (
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
 )
@@ -29,7 +29,7 @@ from locales import get_strings
 
 def _get_container(context) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data["container"]
+    return context.application.bot_data[CONTAINER_KEY]
 
 
 async def _session_new(update: Update, chat_id: int, name: str | None, container: AppContainer) -> None:

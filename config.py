@@ -115,3 +115,6 @@ def setup_logger() -> logging.Logger:
 
 
 logger = setup_logger()
+
+# ── DI container key (used by AppContainer injection) ───────────────────
+CONTAINER_KEY = "container"

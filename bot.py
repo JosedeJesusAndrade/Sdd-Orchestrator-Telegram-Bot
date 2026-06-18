@@ -10,6 +10,8 @@ import asyncio
 import logging
 import os
 import signal
+import sys
+import time
 import nest_asyncio
 
 from datetime import datetime, timezone
@@ -25,7 +27,7 @@ from telegram.ext import (
 
 from config import (
     BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
-    DEFAULT_MODEL,
+    DEFAULT_MODEL, CONTAINER_KEY,
     OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
     OPENAI_API_KEY, OPENCODE_CMD,
     SESSIONS_PATH,
@@ -39,6 +41,7 @@ from services.message_sender import MessageSender
 from services.prompt_service import PromptService
 from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.telegram_adapter import TelegramAdapter
+from services.ai_provider_factory import AIProviderFactory
 from services.container import AppContainer
 
 from handlers.messages import handle_message, handle_voice
@@ -281,13 +284,10 @@ async def run_bot() -> None:
     """Run the bot with proper signal handling for clean shutdown.
 
     Week 3 refactor: AIBackend + BotPort protocols introduced.
-    AppContainer injected via app.bot_data["container"] (DI).
+    AppContainer injected via app.bot_data[CONTAINER_KEY] (DI).
     Handlers access services via _get_container(context).
     """
-    import time
-    # Set START_TIME as early as possible for /status uptime
-    import config
-    config.START_TIME = time.time()
+    start_time = time.time()
 
     app = build_application()
 
@@ -296,16 +296,10 @@ async def run_bot() -> None:
     await app.updater.start_polling()
 
     # ── Build the service layer and inject into PTB application context ──
-    # Pattern: create AppContainer, inject via app.bot_data["container"],
-    # so handlers access services via _get_container(context).
     bot_port = TelegramAdapter(app.bot)
-
-    from services.ai_provider_factory import AIProviderFactory
-    from services.opencode_cli_backend import OpenCodeCLIBackend
 
     provider_factory = AIProviderFactory(default_provider="opencode")
     provider_factory.register("opencode", OpenCodeCLIBackend)
-    # Eagerly create the default backend so constructor args are passed
     provider_factory.get("opencode", opencode_cmd=OPENCODE_CMD, workdir=OPENCODE_WORKDIR, timeout=OPENCODE_TIMEOUT)
 
     session_store = SessionStore(SESSIONS_PATH)
@@ -322,15 +316,20 @@ async def run_bot() -> None:
         prompt_service=prompt_service,
         provider_factory=provider_factory,
         bot_port=bot_port,
-        start_time=config.START_TIME or time.time(),
+        start_time=start_time,
         allowed_chat_ids=ALLOWED_CHAT_IDS,
         default_model=DEFAULT_MODEL,
     )
-    app.bot_data["container"] = container
+    app.bot_data[CONTAINER_KEY] = container
     logger.info("Service layer initialized (SessionStore + MessageSender + PromptService + AppContainer)")
 
-    # ── Shared shutdown event: used by both signal handler and connectivity monitor ──
+    # ── Shared shutdown event + exit code ───────────────────────────
+    # exit_code is a list for mutability (handlers need to set it)
+    # exit_code=0 → normal shutdown, exit_code=42 → /update restart
     stop_event = asyncio.Event()
+    exit_code = [0]
+    app.bot_data["stop_event"] = stop_event
+    app.bot_data["exit_code"] = exit_code
 
     # ── Background connectivity monitor (asyncio task, no extra deps) ──
     connectivity_task = asyncio.create_task(
@@ -398,6 +397,7 @@ async def run_bot() -> None:
     await app.stop()
     await app.shutdown()
     logger.info("Bot stopped.")
+    sys.exit(exit_code[0])
 
 
 if __name__ == "__main__":

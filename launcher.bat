@@ -12,6 +12,10 @@ REM ================================================================
 title OpenCode Telegram Bridge Launcher
 cd /d %~dp0
 
+:: Ensure GitHub CLI (gh) is in PATH — winget installs it to Program Files\GitHub CLI
+:: which may not be in PATH for processes spawned before winget finished
+set "PATH=C:\Program Files\GitHub CLI;%PATH%"
+
 :start
 echo [%time%] Iniciando OpenCode Bot...
 call .venv\Scripts\activate.bat

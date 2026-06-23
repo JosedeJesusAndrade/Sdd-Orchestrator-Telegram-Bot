@@ -11,7 +11,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import DEFAULT_SESSION_NAME, logger
+from config import DEFAULT_SESSION_NAME, CONTAINER_KEY, logger
 from persistence.sessions import load_session_map_safe, fetch_opencode_sessions
 from utils.logging import mask_chat_id
 from handlers import authorized
@@ -20,7 +20,7 @@ from services.container import AppContainer
 
 def _get_container(context) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data["container"]
+    return context.application.bot_data[CONTAINER_KEY]
 
 
 @authorized

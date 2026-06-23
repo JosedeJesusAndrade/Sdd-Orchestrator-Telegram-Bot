@@ -1,6 +1,6 @@
 """Spanish (es) user-facing strings."""
 START_WELCOME = "\U0001f44b OpenCode Bot listo.\n\nEnvi\u00e1 cualquier mensaje y se ejecutar\u00e1 con OpenCode CLI.\nSoporta m\u00faltiples sesiones con /session new|list|switch|delete|info\n/help \u2014 ver todos los comandos\n/status \u2014 estado de la sesi\u00f3n\n/new \u2014 reiniciar sesi\u00f3n activa"
-HELP_TEXT = "*Comandos disponibles:*\n\n/open `<prompt>` \u2014 Enviar prompt\n/model `<alias>` \u2014 Cambiar modelo\n/config \u2014 Configuraci\u00f3n personal\n/cancel \u2014 Cancelar prompt\n/status \u2014 Estado de sesi\u00f3n\n/new \u2014 Reiniciar sesi\u00f3n\n/session new|list|switch|delete|info|discover|adopt\n/help \u2014 Este mensaje\n\nTambi\u00e9n pod\u00e9s enviar mensajes directamente o notas de voz."
+HELP_TEXT = "*Comandos disponibles:*\n\n/open `<prompt>` \u2014 Enviar prompt\n/model `<alias>` \u2014 Cambiar modelo (pro, flash, m3, m27, m27-fast...)\n/config \u2014 Configuraci\u00f3n personal\n/cancel \u2014 Cancelar prompt\n/status \u2014 Estado de sesi\u00f3n\n/new \u2014 Reiniciar sesi\u00f3n\n/session new|list|switch|delete|info|discover|adopt\n/help \u2014 Este mensaje\n\nTambi\u00e9n pod\u00e9s enviar mensajes directamente o notas de voz."
 STATUS_HEADER = "\U0001f4ca *Estado de la sesi\u00f3n*"
 STATUS_NO_SESSION = "\u26aa Sin sesi\u00f3n activa."
 STATUS_LINE_MODEL = "\u251c\u2500 Modelo: `{model}`"

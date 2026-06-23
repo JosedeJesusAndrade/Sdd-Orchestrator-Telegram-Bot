@@ -14,7 +14,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from config import OPENAI_API_KEY, logger
+from config import OPENAI_API_KEY, CONTAINER_KEY, logger
 from utils.logging import mask_chat_id
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
@@ -23,7 +23,7 @@ from services.container import AppContainer
 
 def _get_container(context) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data["container"]
+    return context.application.bot_data[CONTAINER_KEY]
 
 
 async def transcribe_voice(file_path: str) -> str | None:

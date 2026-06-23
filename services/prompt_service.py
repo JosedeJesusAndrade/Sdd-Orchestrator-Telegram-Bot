@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME,
     OPENCODE_TIMEOUT, OPENCODE_WORKDIR,
+    PROGRESS_UPDATE_INTERVAL,
     logger,
 )
 
@@ -151,10 +152,25 @@ class PromptService:
                 chat_id, "\u23f3 OpenCode procesando..."
             )
 
+            progress_task = asyncio.create_task(self._update_progress(chat_id, proc_msg))
+
+            # Check if cancelled during session sync (before backend execution)
+            if chat_id in self._cancel:
+                await self._sender.edit_message(
+                    chat_id, proc_msg.message_id, "\u23f9\ufe0f Cancelado."
+                )
+                return ""
+
             # 3. Execute OpenCode via AI backend
             result = await self._execute_prompt(
                 chat_id, prompt_text, session, model,
             )
+
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
 
             # 4. Deliver response
             await self._deliver_response(chat_id, result, proc_msg, session)
@@ -184,12 +200,22 @@ class PromptService:
         provider = await self._store.get_chat_setting(chat_id, "provider", "opencode")
         timeout_val = await self._store.get_chat_setting(chat_id, "timeout", OPENCODE_TIMEOUT)
         workdir = await self._store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
+        agent = await self._store.get_chat_setting(chat_id, "agent", "sdd-orchestrator")
 
         backend = self._factory.get(provider)
+
+        # Check if cancelled during settings resolution (before subprocess)
+        if chat_id in self._cancel:
+            return {
+                "stdout": "", "stderr": "", "returncode": 0,
+                "cancelled": True,
+            }
+
         result = await backend.execute(
             prompt=prompt,
             model=model,
             session_id=session.real_id if session else None,
+            agent=agent,
             workdir=str(workdir),
         )
         return {
@@ -224,7 +250,7 @@ class PromptService:
             or (result["stderr"] and not result["stdout"].strip())
         )
         if has_error:
-            error_text = result["stderr"] or result["stdout"] or "Unknown error"
+            error_text = clean_opencode_output(result["stderr"] or result["stdout"] or "Unknown error")
             await self._sender.edit_message(
                 chat_id, proc_msg.message_id,
                 f"\u274c Error: {error_text[:500]}",
@@ -316,3 +342,18 @@ class PromptService:
             len(prompt),
             model,
         )
+
+    async def _update_progress(self, chat_id: int, proc_msg) -> None:
+        start = time.monotonic()
+        try:
+            while True:
+                await asyncio.sleep(PROGRESS_UPDATE_INTERVAL)
+                elapsed = int(time.monotonic() - start)
+                await self._sender.edit_message(
+                    chat_id, proc_msg.message_id,
+                    f"\u23f3 OpenCode procesando... ({elapsed}s)"
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass

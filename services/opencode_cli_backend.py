@@ -19,24 +19,28 @@ class OpenCodeCLIBackend:
         self._current_process: subprocess.Popen | None = None
     
     async def execute(
-        self, prompt: str, model: str, session_id: str | None, workdir: str,
+        self, prompt: str, model: str, session_id: str | None,
+        agent: str | None = None, workdir: str | None = None,
     ) -> AIBackendResult:
         cmd_parts = [self._cmd, "run"]
         if model:
             cmd_parts.extend(["--model", model])
+        if agent:
+            cmd_parts.extend(["--agent", agent])
         if session_id:
             cmd_parts.extend(["--continue", "--session", session_id])
         # Prepend Telegram marker + fix Windows newline-as-separator bug
+        effective_workdir = workdir or self._workdir
         cmd_parts.append(f"[📱 Telegram] {prompt}".replace("\n", " "))
-        
+
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
-        
+
         proc = await asyncio.create_subprocess_exec(
             *cmd_parts,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=workdir,
+            cwd=effective_workdir,
             env=env,
         )
         self._current_process = proc

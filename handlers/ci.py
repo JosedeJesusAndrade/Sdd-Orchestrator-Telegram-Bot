@@ -15,12 +15,13 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from handlers import authorized
+from config import CONTAINER_KEY
 from services.container import AppContainer
 
 
 def _get_container(context: ContextTypes.DEFAULT_TYPE) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data["container"]
+    return context.application.bot_data[CONTAINER_KEY]
 
 
 async def _run_git_command(workdir: str, *args: str) -> tuple[int, str, str]:
@@ -39,10 +40,27 @@ async def _run_git_command(workdir: str, *args: str) -> tuple[int, str, str]:
     )
 
 
+def _resolve_gh() -> str:
+    """Find gh executable. Tries PATH first, then known Windows install paths."""
+    import shutil
+    candidates = [
+        shutil.which("gh"),
+        shutil.which("gh.exe"),
+        r"C:\Program Files\GitHub CLI\gh.exe",
+        r"C:\Program Files (x86)\GitHub CLI\gh.exe",
+        os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gh.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return "gh"
+
+
 async def _run_gh_command(workdir: str, *args: str) -> tuple[int, str, str]:
     """Execute a gh (GitHub CLI) command."""
+    gh_cmd = _resolve_gh()
     proc = await asyncio.create_subprocess_exec(
-        "gh", *args,
+        gh_cmd, *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,
@@ -156,7 +174,9 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Self-restart the bot: /update
 
-    Pulls latest from GitHub and restarts via exit code 42.
+    Triggers a GRACEFUL shutdown with exit code 42.
+    The full cleanup sequence runs (session save, connectivity cancel,
+    app.stop/shutdown), THEN sys.exit(42) is called.
     The launcher.bat babysitter detects code 42 and does git pull + restart.
     """
     container = _get_container(context)
@@ -164,19 +184,19 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await sender.reply_plain(
         update,
-        "🔄 Recibido. Descargando última versión y reiniciando el bot...\n"
+        "🔄 Recibido. Iniciando apagado controlado...\n"
         "El bot volverá en ~5 segundos."
     )
 
     import logging
     logger = logging.getLogger("opencode_bot")
-    logger.info("🔄 Auto-reinicio solicitado vía Telegram (exit code 42)")
+    logger.info("🔄 Auto-reinicio solicitado vía Telegram — iniciando graceful shutdown (exit code 42)")
 
-    # Flush any pending I/O
-    await asyncio.sleep(0.5)
-
-    # Exit with code 42 — the launcher.bat detects this and does git pull + restart
-    os._exit(42)
+    # Trigger graceful shutdown via the shared stop_event + exit_code
+    # The bot will: save sessions → cancel monitor → stop polling → shutdown → sys.exit(42)
+    app = context.application
+    app.bot_data["exit_code"][0] = 42
+    app.bot_data["stop_event"].set()
 
 
 @authorized

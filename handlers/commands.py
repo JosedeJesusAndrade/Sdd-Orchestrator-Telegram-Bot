@@ -14,7 +14,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    DEFAULT_MODEL, DEFAULT_SESSION_NAME,
+    DEFAULT_MODEL, DEFAULT_SESSION_NAME, CONTAINER_KEY,
     MODEL_ALIASES, resolve_model, logger,
 )
 from utils.logging import mask_chat_id
@@ -27,7 +27,7 @@ from locales import get_strings
 
 def _get_container(context) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data["container"]
+    return context.application.bot_data[CONTAINER_KEY]
 
 
 @authorized
@@ -47,7 +47,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "*Comandos disponibles:*\n\n"
         "/open `<prompt>` — Enviar prompt al orquestador\n"
-        "/model `<alias>` — Cambiar modelo\n"
+        "/model `<alias>` — Cambiar modelo (deepseek: pro, flash | minimax: m3, m27, m27-fast)\n"
         "/config `[key] [value]` — Configuración personal (modelo, timeout, etc.)\n"
         "/health — Estado del bot (versión, uptime, sesiones)\n"
         "/cancel — Cancelar prompt en ejecución\n"
@@ -76,6 +76,21 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     session = await container.session_store.get_active_session(chat_id)
     model = await container.session_store.get_model(chat_id)
+
+    settings = await container.session_store.get_all_chat_settings(chat_id)
+    workdir = settings.get("workdir", "")
+    branch = "?"
+    if workdir:
+        try:
+            import subprocess
+            br = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=workdir, timeout=5,
+            )
+            if br.returncode == 0:
+                branch = br.stdout.strip()
+        except Exception:
+            pass
 
     # Build session info
     if session is not None:
@@ -129,6 +144,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "\u251c\u2500 Nombre: {session_name}\n"
         "\u251c\u2500 ID OpenCode: {session_id_display}\n"
         "\u251c\u2500 Modelo: {model}\n"
+        "\u251c\u2500 Rama: {branch}\n"
         "\u251c\u2500 Primera interacción: {first_msg}\n"
         "\u251c\u2500 Última interacción: {last_used}\n"
         "\u251c\u2500 Total prompts: {prompt_count}\n"
@@ -136,6 +152,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             model=model,
             session_name=session_name,
             session_id_display=session_id_display,
+            branch=branch,
             first_msg=first_msg,
             last_used=last_used,
             prompt_count=prompt_count,

@@ -1,14 +1,169 @@
-# 🤖 SDD Orchestrator Telegram Bot
+# Sdd-Orchestrator-Telegram-Bot
 
-**Telegram → OpenCode CLI bridge con esteroides.** 5 semanas de refactor, 0 deuda técnica, portfolio-ready.
+Telegram bridge for OpenCode CLI. Ejecuta prompts de desarrollo contra múltiples proveedores de IA (DeepSeek, MiniMax) directamente desde una conversación de Telegram, con persistencia de sesiones, internacionalización centralizada y arranque desatendido vía `/update`.
 
-¿Qué onda, Carnal? Este bot convierte tu Telegram en una terminal completa para **OpenCode CLI**, el orquestador SDD (Spec-Driven Development). Desde el celular, mientras repartes o te echas un taco, ejecutas prompts de desarrollo con acceso a todos los MCPs: **Context7**, **Engram**, **Notion**. Sin laptop, sin terminal, puro Telegram.
+## Descripción
 
----
+`Sdd-Orchestrator-Telegram-Bot` es una aplicación Python que conecta Telegram con el ejecutable de OpenCode CLI para habilitar desarrollo asistido por IA desde dispositivos móviles. El bot recibe mensajes de texto o voz en un chat autorizado, los reenvía al backend de IA configurado y devuelve la respuesta formateada a Telegram.
 
-## 🏗️ Arquitectura (post-refactor)
+El proyecto existe para提供一个 punto de acceso móvil a flujos de trabajo de Spec-Driven Development. En lugar de depender de una terminal local, el usuario envía prompts desde el teléfono, gestiona sesiones por chat, cambia de modelo, crea Pull Requests y actualiza el bot sin abrir una laptop.
 
+La arquitectura sigue una separación clara por capas: handlers de comandos, servicios con inyección de dependencias, y adaptadores intercambiables. El protocolo `AIBackend` abstrae OpenCode CLI, mientras `BotPort` abstrae `python-telegram-bot`. Esto permite sustituir el backend de IA o la plataforma de mensajería sin modificar la lógica de negocio.
+
+## Características
+
+- Múltiples sesiones por chat, con persistencia en `sessions.json` y cambio explícito entre sesiones activas
+- Multi-proveedor mediante `AIProviderFactory` (DeepSeek `pro`/`flash`, MiniMax `m3`/`m27`/`m27-fast`)
+- Comandos de CI/CD desde Telegram: `/pr` crea un Pull Request con `gh`, `/update` reinicia el bot con la última versión
+- i18n centralizada en `locales/es.py`, accesible vía `get_strings()`
+- `SessionStore` thread-safe como única fuente de verdad para el estado
+- Auto-restart con `launcher.bat` y código de salida `42` para `/update`
+- Protocolos abstractos (`AIBackend`, `BotPort`) que desacoplan la integración
+- Inyección de dependencias a través de `AppContainer`; cero variables globales mutables
+- Calidad de código con `ruff`, `mypy --strict` y `pytest`
+
+## Requisitos
+
+- **Python 3.11 o superior**
+- **Node.js** y **OpenCode CLI** instalados y disponibles en `PATH`
+- **Token de Telegram Bot** obtenido desde [@BotFather](https://t.me/BotFather)
+- **(Opcional) `gh` CLI** autenticado, requerido para el comando `/pr`
+- **(Opcional) `git`**, requerido para el flujo de auto-restart con `launcher.bat`
+- **(Opcional) Clave de API de OpenAI**, necesaria únicamente para transcripción de notas de voz
+
+## Instalación
+
+### 1. Clonar el repositorio
+
+```bash
+git clone https://github.com/<owner>/Sdd-Orchestrator-Telegram-Bot.git
+cd Sdd-Orchestrator-Telegram-Bot
 ```
+
+### 2. Crear y activar un entorno virtual
+
+```bash
+python -m venv .venv
+```
+
+En Windows (PowerShell):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+En Linux o macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+### 3. Instalar dependencias
+
+```bash
+pip install -e ".[dev]"
+```
+
+Este comando instala las dependencias de runtime y de desarrollo (ruff, mypy, pytest, pytest-asyncio).
+
+### 4. Instalar OpenCode CLI
+
+```bash
+npm install -g @anthropic/opencode
+```
+
+Verifica la instalación con `opencode --version`.
+
+### 5. Crear el bot en Telegram
+
+Habla con [@BotFather](https://t.me/BotFather), ejecuta `/newbot` y guarda el token entregado.
+
+### 6. Obtener el identificador del chat
+
+Ejecuta el script auxiliar y envía cualquier mensaje al bot desde el chat que se desea autorizar:
+
+```bash
+python get_chat_id.py
+```
+
+El script imprime el `chat_id` que debe agregarse a la variable `ALLOWED_CHAT_IDS`.
+
+### 7. Configurar variables de entorno
+
+Crea un archivo `.env` en la raíz del proyecto (ver la sección [Configuración](#configuración) para más detalle).
+
+### 8. Iniciar el bot
+
+Con auto-restart y `git pull` automático (recomendado en producción):
+
+```powershell
+.\launcher.bat
+```
+
+Ejecución directa sin babysitter:
+
+```bash
+python -m bot
+```
+
+## Configuración
+
+El bot carga su configuración desde variables de entorno definidas en un archivo `.env`:
+
+```bash
+# Token entregado por @BotFather al crear el bot
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+
+# Identificadores de chat autorizados, separados por coma.
+# Cada chat_id puede usar su propio workdir, modelo y timeout.
+ALLOWED_CHAT_IDS=123456789,-1001234567890
+
+# Directorio de trabajo donde OpenCode CLI ejecutará los prompts.
+# Puede ser sobreescrito por chat con /config.
+OPENCODE_WORKDIR=C:/ruta/al/proyecto
+
+# Timeout en segundos para la ejecución de un prompt.
+OPENCODE_TIMEOUT=600
+
+# Proveedor por defecto: opencode (único soportado actualmente).
+AI_PROVIDER=opencode
+
+# Clave de OpenAI para transcripción de notas de voz (opcional).
+OPENAI_API_KEY=
+```
+
+Adicionalmente, la configuración puede ajustarse por chat mediante el comando `/config` sin necesidad de modificar el archivo `.env`.
+
+## Uso
+
+Una vez iniciado, el bot responde en los chats autorizados. Ejemplos de uso habitual:
+
+```text
+/start
+/help
+/status
+
+/model pro
+/model m3
+
+/session new mi_feature
+/session list
+/session switch mi_feature
+/session delete vieja
+
+/open "explica este código"
+
+/pr "Fix: corrige timeout en Windows"
+
+/update
+```
+
+Cualquier mensaje de texto que no comience con `/` se interpreta como un prompt directo y se envía al backend configurado en la sesión activa.
+
+## Arquitectura
+El proyecto sigue una arquitectura por capas con inyección de dependencias. `bot.py` actúa como punto de entrada y construye un `AppContainer` que provee los servicios a los handlers mediante `context.bot_data`.
+
+```text
 bot.py → AppContainer (DI)
            ├── AIProviderFactory → OpenCodeCLIBackend (AIBackend Protocol)
            ├── TelegramAdapter (BotPort Protocol)
@@ -16,224 +171,109 @@ bot.py → AppContainer (DI)
            ├── MessageSender (mensajería unificada)
            └── PromptService (orquestación)
 
-handlers → _get_container(context).prompt_service.execute()
-        → locales/get_strings() para i18n
-        → @authorized decorator para auth
+handlers → container.prompt_service.execute()
+          → locales.get_strings() para i18n
+          → @authorized decorator para autenticación
 ```
 
-**Lo que cambió en 5 semanas:**
-- 🧹 **5 dicts globales mutables → 0** — todo el estado en `SessionStore`
-- 🧩 **`_process_prompt` de 273 líneas → `PromptService.execute()`**
-- 📨 **3 patrones de envío de mensajes → 1 `MessageSender`**
-- 🔌 **16 `import bot` → 0** — todo por inyección de dependencias
-- 🔓 **Vendor lock a `subprocess` → `AIBackend` Protocol**
-- 🔓 **Vendor lock a `telegram.Bot` → `BotPort` Protocol**
-- 🌐 **~93 strings hardcodeadas en español → `locales/es.py`**
-- 🧪 **25 tests → 31 tests**
-- 💯 **Health Score: 5.5 → portfolio-ready**
+Componentes principales:
 
----
-
-## 📁 Estructura del proyecto
-
-```
-Sdd-Orchestrator-Telegram-Bot/
-├── bot.py                      # Punto de entrada, AppContainer, handlers
-├── config.py                   # Configuración, constantes, logger
-├── pyproject.toml              # ruff, mypy strict, pytest
-├── launcher.bat                # Babysitter con git pull + auto-restart
-├── sessions.json               # Persistencia de sesiones (fuente de verdad)
-├── sessions.example.json       # Template para nuevos contributors
-│
-├── services/                   # Capa de servicios (DI)
-│   ├── container.py            # AppContainer (inyección de dependencias)
-│   ├── session_store.py        # SessionStore (persistencia en JSON)
-│   ├── message_sender.py       # MessageSender (mensajería unificada)
-│   ├── prompt_service.py       # PromptService (orquestación de prompts)
-│   ├── ai_backend.py           # AIBackend Protocol (interfaz abstracta)
-│   ├── bot_port.py             # BotPort Protocol (interfaz abstracta)
-│   ├── ai_provider_factory.py  # AIProviderFactory (registry de backends)
-│   ├── opencode_cli_backend.py # OpenCodeCLIBackend (implementación real)
-│   └── telegram_adapter.py     # TelegramAdapter (implementación real)
-│
-├── handlers/                   # Handlers de comandos
-│   ├── commands.py             # /start, /help, /status, /new, /model, /cancel, /open, /config
-│   ├── sessions.py             # /session new|list|switch|delete|info|discover|adopt
-│   ├── messages.py             # Mensajes de texto y voz
-│   ├── admin.py                # /test_md, /session_preview
-│   └── ci.py                   # /pr (crear PR) y /update (auto-restart)
-│
-├── locales/                    # Internacionalización (i18n)
-│   ├── __init__.py             # get_strings() loader
-│   └── es.py                   # Strings en español (centralizados)
-│
-├── formatting/                 # Transformación de texto (sin I/O)
-│   └── markdown.py             # clean_opencode_output, telegramify_markdown, split_message
-│
-├── utils/                      # Utilidades
-│   ├── logging.py              # Configuración de logging
-│   └── time_formatting.py      # relative_time (formato "hace X min")
-│
-├── tests/                      # Tests (31 tests)
-│   ├── test_session_store.py   # Tests de SessionStore (6 nuevos)
-│   ├── test_session_parse.py   # Tests de parseo de sesiones
-│   ├── test_persistence.py     # Tests de persistencia
-│   ├── test_utils.py           # Tests de utilidades
-│   └── conftest.py             # Fixtures compartidos
-│
-├── .github/workflows/ci.yml    # CI/CD con GitHub Actions
-├── .pre-commit-config.yaml     # Hooks: ruff + mypy
-└── .gitattributes              # LF/CRLF consistency
-```
-
----
-
-## 📋 Comandos del bot
-
-| Comando | Descripción | Ejemplo |
+| Capa | Archivo | Responsabilidad |
 |---|---|---|
-| `/start` | Inicia el bot, mensaje de bienvenida | `/start` |
-| `/help` | Lista todos los comandos | `/help` |
-| `/status` | Estado de sesión, modelo, uptime | `/status` |
-| `/new` | Reinicia la sesión activa | `/new` |
-| `/model pro` | Cambia a deepseek-v4-pro (razonamiento profundo) | `/model pro` |
-| `/model flash` | Cambia a deepseek-v4-flash (rápido) | `/model flash` |
-| `/config` | Configuración por chat (modelo, timeout, workdir, provider) | `/config` |
-| `/cancel` | Cancela el prompt en ejecución | `/cancel` |
-| `/open <prompt>` | Envía un prompt explícito | `/open explica este código` |
-| `/session new <nombre>` | Crea una sesión nombrada (lazy) | `/session new mi_feature` |
-| `/session list` | Lista todas las sesiones del chat | `/session list` |
-| `/session switch <nombre>` | Cambia a otra sesión | `/session switch docs` |
-| `/session delete <nombre>` | Elimina una sesión | `/session delete vieja` |
-| `/session info [nombre]` | Detalles enriquecidos de sesión | `/session info` |
-| `/session discover` | Descubre sesiones OpenCode existentes | `/session discover` |
-| `/session adopt <id> <nombre>` | Adopta una sesión por ID real | `/session adopt ses_xxx mi_sesion` |
-| `/pr <título>` | Crea un PR en GitHub desde Telegram | `/pr Fix: corrige timeout en Windows` |
-| `/update` | Auto-restart del bot (git pull + restart) | `/update` |
-| _(cualquier texto)_ | Prompt directo al orquestador SDD | `¿Qué es SDD?` |
+| Presentación | `handlers/` | Comandos de Telegram, autorización, parsing de argumentos |
+| Servicios | `services/container.py`, `services/prompt_service.py` | Orquestación y composición de dependencias |
+| Datos | `services/session_store.py` | Persistencia thread-safe de sesiones en `sessions.json` |
+| Adaptadores | `services/opencode_cli_backend.py`, `services/telegram_adapter.py` | Implementaciones concretas detrás de los protocolos |
+| Formato | `formatting/markdown.py` | Limpieza y troceo de la salida para Telegram |
+| i18n | `locales/es.py` | Strings de usuario centralizadas |
 
-### Nuevos comandos (post-refactor)
+Para una descripción detallada, consultar [DOCUMENTACION.md](DOCUMENTACION.md).
 
-**`/config`** — Configuración por chat sin tocar `.env`:
-- Modelo (`pro` / `flash`)
-- Timeout de prompts
-- Workdir personalizado
-- Provider (`opencode`)
+## Comandos
 
-**`/pr <título>`** — Crea un Pull Request en GitHub desde Telegram. Lee `CHANGELOG.md` del workdir del chat, ejecuta `gh pr create` y te devuelve la URL del PR.
+| Comando | Descripción |
+|---|---|
+| `/start` | Mensaje de bienvenida |
+| `/help` | Lista de comandos disponibles |
+| `/status` | Estado de la sesión, modelo, uptime |
+| `/new` | Reinicia la sesión activa |
+| `/model <alias>` | Cambia el modelo (por ejemplo `pro`, `flash`, `m3`, `m27`) |
+| `/config` | Ajusta modelo, timeout, workdir y provider por chat |
+| `/cancel` | Cancela el prompt en ejecución |
+| `/open <prompt>` | Envía un prompt explícito al backend |
+| `/session new <nombre>` | Crea una sesión nombrada |
+| `/session list` | Lista las sesiones del chat |
+| `/session switch <nombre>` | Cambia la sesión activa |
+| `/session delete <nombre>` | Elimina una sesión |
+| `/session info [nombre]` | Muestra detalles de una sesión |
+| `/session discover` | Descubre sesiones existentes en OpenCode |
+| `/session adopt <id> <nombre>` | Adopta una sesión por identificador real |
+| `/pr <título>` | Crea un Pull Request en GitHub desde Telegram |
+| `/update` | Reinicia el bot tras `git pull` |
+| _(texto libre)_ | Prompt directo al backend en la sesión activa |
 
-**`/update`** — Reinicia el bot automáticamente. Hace `os._exit(42)`, el `launcher.bat` detecta el código de salida y ejecuta `git pull` + restart. Cero intervención manual.
-
----
-
-## 🚀 Cómo ejecutar
-
-```powershell
-# Usa el babysitter para auto-restart en /update (recomendado)
-.\launcher.bat
-
-# Ejecución directa (sin auto-restart)
-python -m bot
-```
-
-### Requisitos
-
-- **Python 3.11+**
-- **Node.js** (para OpenCode CLI)
-- **OpenCode CLI** instalado globalmente (`npm install -g @anthropic/opencode`)
-- **Bot de Telegram** creado con @BotFather
-- Variables en `.env`:
-  ```bash
-  TELEGRAM_BOT_TOKEN=<token>
-  ALLOWED_CHAT_IDS=<chat_id_1>,<chat_id_2>
-  OPENCODE_WORKDIR=C:\Users\marie\Desktop\mono\python
-  OPENCODE_TIMEOUT=600
-  ```
-
-### Dependencias
+## Testing y calidad
 
 ```bash
-pip install -r requirements.txt
-pip install -e ".[dev]"  # ruff, mypy, pytest
-```
+# Ejecutar la suite de pruebas
+pytest
 
----
-
-## 🧪 Testing y calidad
-
-```bash
-# Ejecutar tests
-pytest                          # 31 tests
-
-# Linting y type checking
+# Linting
 ruff check .
+
+# Type checking en modo strict
 mypy .
 
-# Pre-commit hooks
+# Pre-commit hooks (ruff, mypy, formateo)
 pre-commit run --all-files
 ```
 
-**Métricas post-refactor:**
-- **31 tests** (25 antes del refactor)
-- **mypy strict** mode (cero `type: ignore`)
-- **ruff** con reglas E, F, I, N, W, UP, B, C4, SIM, T20
-- **CI/CD** vía GitHub Actions en cada push
+El repositorio incluye configuración para `ruff` (reglas `E, F, I, N, W, UP, B, C4, SIM, T20`), `mypy --strict` y `pytest` con modo asyncio automático. CI ejecuta los tres pasos en cada push y Pull Request.
 
----
+## CI/CD
 
-## 🔄 CI/CD Pipeline
+El pipeline en `.github/workflows/ci.yml` corre `ruff`, `mypy --strict` y `pytest` sobre Python 3.11, 3.12 y 3.13 en cada push a `main` y en cada Pull Request.
 
-El pipeline corre en **GitHub Actions** (`.github/workflows/ci.yml`) y también desde la calle:
+Comandos equivalentes disponibles desde Telegram:
 
-| Entorno | Qué hace |
+| Comando | Efecto |
 |---|---|
-| **GitHub Actions** | ruff lint, mypy strict, pytest en cada push |
-| **Telegram `/pr`** | Crea PRs desde el celular (lee CHANGELOG, ejecuta gh pr create) |
-| **Telegram `/update`** | Auto-restart: `os._exit(42)` → `launcher.bat` hace git pull + restart |
+| `/pr <título>` | Lee el `CHANGELOG.md` del workdir del chat y crea un PR con `gh pr create` |
+| `/update` | Ejecuta `os._exit(42)`; `launcher.bat` detecta el código y corre `git pull` seguido de un reinicio limpio |
+Flujo de auto-restart:
 
-**Flujo de auto-restart (`/update`):**
-```
-Usuario → /update → bot hace os._exit(42)
-                         ↓
-launcher.bat detecta exit code 42
-                         ↓
+```text
+Usuario → /update → bot ejecuta os._exit(42)
+                          ↓
+launcher.bat detecta el código de salida 42
+                          ↓
 git pull origin main
-                         ↓
-python -m bot  (reinicio limpio)
+                          ↓
+python -m bot (reinicio limpio)
 ```
 
----
+## Internacionalización
 
-## 🌐 i18n — Todos los strings en un solo lugar
-
-Antes del refactor: ~93 strings en español hardcodeadas en `bot.py` y handlers.
-Después del refactor: todas en `locales/es.py`, accedidas vía `get_strings()`.
+Todos los strings visibles para el usuario final están centralizados en `locales/es.py` y se acceden mediante `get_strings()`:
 
 ```python
 from locales import get_strings
+
 strings = get_strings()
 await update.message.reply_text(strings["welcome"])
 ```
 
-¿Querés agregar inglés? Creás `locales/en.py` con las mismas keys y el loader lo detecta automático. Así de limpio, Carnal.
+Para agregar un nuevo idioma, crea un archivo `locales/<codigo>.py` con las mismas claves que `es.py` y ajusta el loader en `locales/__init__.py`.
 
----
+## Contribuir
 
-## 🧠 Por qué este refactor importa
+1. Realiza un fork del repositorio y crea una rama a partir de `main`.
+2. Implementa los cambios siguiendo el estilo existente (ruff, mypy strict).
+3. Añade o actualiza pruebas en `tests/` para cubrir el cambio.
+4. Ejecuta localmente `ruff check .`, `mypy .` y `pytest` antes de abrir el Pull Request.
+5. Actualiza la documentación (README, DOCUMENTACION.md) si la modificación afecta al uso o a la arquitectura.
+6. Abre un Pull Request describiendo el cambio y referenciando el issue asociado, si aplica.
 
-| Antes | Después |
-|---|---|
-| 1 archivo de ~1500 líneas (`bot.py`) | 18 archivos organizados por responsabilidad |
-| 5 dicts globales mutables | 0 — `SessionStore` thread-safe |
-| `import bot` circular por todos lados | 0 — DI con `AppContainer` |
-| Dependencia directa de `subprocess` | `AIBackend` Protocol (cambiable) |
-| Dependencia directa de `telegram.Bot` | `BotPort` Protocol (testeable) |
-| Strings en español dispersas | `locales/es.py` centralizado |
-| 25 tests | 31 tests |
-| Deuda técnica creciente | Deuda técnica en cero |
+## Licencia
 
-El código ahora es **testeable**, **extensible** y **mantenible**. Podés cambiar OpenCode por otro backend, cambiar Telegram por Discord, o agregar inglés en minutos. No en semanas.
-
----
-
-*Mantenido con ❤️ desde la calle. Si se rompe, `/update` y pa'lante.*
+Este proyecto no incluye un archivo de licencia en el repositorio. Los términos de uso se acuerdan con el autor; contacta al mantenedor antes de redistribuir o utilizar el código en producción.

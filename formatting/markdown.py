@@ -62,8 +62,13 @@ def clean_opencode_output(text: str) -> str:
     ansi_pattern = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     text = ansi_pattern.sub('', text)
 
-    # 2. Remove build lines (model info like "> build · deepseek-v4-pro")
-    text = re.sub(r'^> build .*$', '', text, flags=re.MULTILINE)
+    # 2. Remove header lines (model info like "> build · deepseek-v4-pro" or
+    #    "> sdd-orchestrator · MiniMax-M3"). The agent name can be any token.
+    #    Critical: must strip ALL `> <token> · <model>` headers, otherwise the
+    #    second-pass clean in _assemble_response keeps the header, and step 8
+    #    below trims everything before the FIRST `>` line — which can drop the
+    #    entire response body when the header was appended via stderr.
+    text = re.sub(r'^> \S+ .*$', '', text, flags=re.MULTILINE)
 
     # 3. Remove tool call traces (single and multi-line JSON with ⚙ marker)
     text = _remove_tool_traces(text)

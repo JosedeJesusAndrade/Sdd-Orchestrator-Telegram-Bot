@@ -32,6 +32,27 @@ class TestCleanOpencodeOutput:
         assert "build ·" not in result
         assert "Hello" in result
 
+    def test_removes_agent_header_lines(self):
+        text = "> sdd-orchestrator · MiniMax-M3\n¡Hola! 👋"
+        result = clean_opencode_output(text)
+        assert "MiniMax-M3" not in result
+        assert "sdd-orchestrator" not in result
+        assert "¡Hola!" in result
+
+    def test_double_clean_does_not_truncate_body(self):
+        """Regression: when stderr header is appended after body, a second
+        clean_opencode_output pass must NOT drop the body. Previously, the
+        agent header (> sdd-orchestrator · MiniMax-M3) was not stripped by
+        step 2, so step 8's `> trim` discarded everything before the header.
+        """
+        stdout = "Body content here."
+        stderr = "\n> sdd-orchestrator · MiniMax-M3\n"
+        first_pass = clean_opencode_output(stdout)
+        from formatting.markdown import _assemble_response
+        assembled = _assemble_response(first_pass, stderr)
+        assert "Body content here." in assembled
+        assert "MiniMax-M3" not in assembled
+
     def test_removes_tool_traces_single_line(self):
         text = "\u2699 notion_API-post-search {\"filter\": {}}\nResponse text"
         result = clean_opencode_output(text)

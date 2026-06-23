@@ -77,6 +77,21 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session = await container.session_store.get_active_session(chat_id)
     model = await container.session_store.get_model(chat_id)
 
+    settings = await container.session_store.get_all_chat_settings(chat_id)
+    workdir = settings.get("workdir", "")
+    branch = "?"
+    if workdir:
+        try:
+            import subprocess
+            br = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=workdir, timeout=5,
+            )
+            if br.returncode == 0:
+                branch = br.stdout.strip()
+        except Exception:
+            pass
+
     # Build session info
     if session is not None:
         session_name = session.name
@@ -129,6 +144,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "\u251c\u2500 Nombre: {session_name}\n"
         "\u251c\u2500 ID OpenCode: {session_id_display}\n"
         "\u251c\u2500 Modelo: {model}\n"
+        "\u251c\u2500 Rama: {branch}\n"
         "\u251c\u2500 Primera interacción: {first_msg}\n"
         "\u251c\u2500 Última interacción: {last_used}\n"
         "\u251c\u2500 Total prompts: {prompt_count}\n"
@@ -136,6 +152,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             model=model,
             session_name=session_name,
             session_id_display=session_id_display,
+            branch=branch,
             first_msg=first_msg,
             last_used=last_used,
             prompt_count=prompt_count,

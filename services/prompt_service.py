@@ -200,6 +200,7 @@ class PromptService:
         provider = await self._store.get_chat_setting(chat_id, "provider", "opencode")
         timeout_val = await self._store.get_chat_setting(chat_id, "timeout", OPENCODE_TIMEOUT)
         workdir = await self._store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
+        agent = await self._store.get_chat_setting(chat_id, "agent", "sdd-orchestrator")
 
         backend = self._factory.get(provider)
 
@@ -214,6 +215,7 @@ class PromptService:
             prompt=prompt,
             model=model,
             session_id=session.real_id if session else None,
+            agent=agent,
             workdir=str(workdir),
         )
         return {

@@ -31,7 +31,8 @@ class AIBackend(Protocol):
         prompt: str,
         model: str,
         session_id: str | None,
-        workdir: str,
+        agent: str | None = None,
+        workdir: str | None = None,
     ) -> AIBackendResult:
         """Execute a prompt and return the result."""
         ...

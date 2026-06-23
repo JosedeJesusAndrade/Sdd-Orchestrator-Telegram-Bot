@@ -47,7 +47,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "*Comandos disponibles:*\n\n"
         "/open `<prompt>` — Enviar prompt al orquestador\n"
-        "/model `<alias>` — Cambiar modelo\n"
+        "/model `<alias>` — Cambiar modelo (deepseek: pro, flash | minimax: m3, m27, m27-fast)\n"
         "/config `[key] [value]` — Configuración personal (modelo, timeout, etc.)\n"
         "/health — Estado del bot (versión, uptime, sesiones)\n"
         "/cancel — Cancelar prompt en ejecución\n"

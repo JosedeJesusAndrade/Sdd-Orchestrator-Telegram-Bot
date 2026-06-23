@@ -40,10 +40,27 @@ async def _run_git_command(workdir: str, *args: str) -> tuple[int, str, str]:
     )
 
 
+def _resolve_gh() -> str:
+    """Find gh executable. Tries PATH first, then known Windows install paths."""
+    import shutil
+    candidates = [
+        shutil.which("gh"),
+        shutil.which("gh.exe"),
+        r"C:\Program Files\GitHub CLI\gh.exe",
+        r"C:\Program Files (x86)\GitHub CLI\gh.exe",
+        os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gh.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return "gh"
+
+
 async def _run_gh_command(workdir: str, *args: str) -> tuple[int, str, str]:
     """Execute a gh (GitHub CLI) command."""
+    gh_cmd = _resolve_gh()
     proc = await asyncio.create_subprocess_exec(
-        "gh", *args,
+        gh_cmd, *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,

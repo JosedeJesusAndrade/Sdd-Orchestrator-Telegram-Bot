@@ -18,7 +18,11 @@ set "PATH=C:\Program Files\GitHub CLI;%PATH%"
 
 :start
 echo [%time%] Iniciando OpenCode Bot...
-call .venv\Scripts\activate.bat
+if exist ".venv\Scripts\activate.bat" (
+    call .venv\Scripts\activate.bat
+) else (
+    echo [%time%] (sin .venv, usando Python global)
+)
 python bot.py
 
 :: Python se cerró — evaluar código de salida

@@ -5,7 +5,10 @@ import re
 import subprocess
 import sys
 
-from config import OPENCODE_CMD, INTERNAL_SUBPROCESS_TIMEOUT, logger
+from config import OPENCODE_CMD, INTERNAL_SUBPROCESS_TIMEOUT
+from utils.logging import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]:

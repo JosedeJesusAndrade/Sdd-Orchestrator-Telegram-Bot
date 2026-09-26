@@ -8,7 +8,10 @@ import asyncio
 import subprocess
 from pathlib import Path
 
-from config import SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, logger
+from config import SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT
+from utils.logging import get_module_logger
+
+logger = get_module_logger(__name__)
 
 # Lock to prevent race conditions on sessions.json (multiple handlers)
 session_lock = asyncio.Lock()

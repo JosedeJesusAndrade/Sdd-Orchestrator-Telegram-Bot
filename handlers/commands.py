@@ -1,11 +1,15 @@
 """Command handlers: /start, /help, /status, /model, /cancel, /new, /open.
- 
+  
 Architecture change (Week 2→3):
   All handlers now access services via AppContainer from PTB context
   instead of lazy-importing the bot module. This eliminates the
   `import bot; bot.X` pattern entirely.
+
+Phase 2 logging:
+  - Per-module logger via `__name__`
+  - `event=cmd_new` for /new, `event=prompt_cancelled` for /cancel
 """
- 
+
 from __future__ import annotations
 
 import time
@@ -15,14 +19,16 @@ from telegram.ext import ContextTypes
 
 from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME, CONTAINER_KEY,
-    MODEL_ALIASES, resolve_model, logger,
+    MODEL_ALIASES, resolve_model,
 )
-from utils.logging import mask_chat_id
+from utils.logging import get_module_logger, mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
 from services.container import AppContainer
 from locales import get_strings
+
+logger = get_module_logger(__name__)
 
 
 def _get_container(context) -> AppContainer:
@@ -172,9 +178,15 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     active = await container.session_store.get_active_session(chat_id)
     active_name = active.name if active else DEFAULT_SESSION_NAME
 
+    # Note: session_store.reset_session() already emits event=session_reset.
+    # This command-level event records the user-initiated action.
     logger.info(
-        "Session '%s' reset by /new for %s",
-        active_name, mask_chat_id(chat_id),
+        "Command /new invoked",
+        extra={
+            "event": "cmd_new",
+            "chat_id_masked": mask_chat_id(chat_id),
+            "session_name": active_name,
+        },
     )
     await update.message.reply_text(
         "\U0001f504 Sesión '{name}' reiniciada. "
@@ -214,7 +226,11 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     cancelled = container.prompt_service.cancel(chat_id)
     if cancelled:
         logger.info(
-            "Prompt cancelled for %s", mask_chat_id(chat_id),
+            "Prompt cancelled by user",
+            extra={
+                "event": "prompt_cancelled",
+                "chat_id_masked": mask_chat_id(chat_id),
+            },
         )
         await update.message.reply_text(S.CANCEL_DONE)
     else:

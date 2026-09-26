@@ -1,10 +1,10 @@
 """Markdown formatting utilities for Telegram-OpenCode bridge."""
 import re
-import logging
 
 from config import TELEGRAM_MAX_MESSAGE_LENGTH
+from utils.logging import get_module_logger
 
-logger = logging.getLogger("opencode_bot")
+logger = get_module_logger(__name__)
 
 
 def _filter_stderr(stderr: str) -> str:

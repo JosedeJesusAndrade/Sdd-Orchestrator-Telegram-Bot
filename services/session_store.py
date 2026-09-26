@@ -26,7 +26,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import DEFAULT_MODEL, DEFAULT_SESSION_NAME, logger
+from config import DEFAULT_MODEL, DEFAULT_SESSION_NAME
+from utils.logging import get_module_logger, mask_chat_id
+
+logger = get_module_logger(__name__)
 
 
 # ── Domain objects ─────────────────────────────────────────────────────
@@ -170,7 +173,14 @@ class SessionStore:
         chat_data["active"] = name
         await self._save(data)
 
-        logger.info("SessionStore: created session '%s' for chat %d", name, chat_id)
+        logger.info(
+            "Session created",
+            extra={
+                "event": "session_created",
+                "session_name": name,
+                "chat_id_masked": mask_chat_id(chat_id),
+            },
+        )
         return SessionInfo(
             name=name, real_id=None, title=name,
             created=now, last_used=None, prompt_count=0, is_active=True,
@@ -193,7 +203,14 @@ class SessionStore:
         await self._save(data)
 
         s = sessions[name]
-        logger.info("SessionStore: switched to '%s' for chat %d", name, chat_id)
+        logger.info(
+            "Session switched",
+            extra={
+                "event": "session_switched",
+                "session_name": name,
+                "chat_id_masked": mask_chat_id(chat_id),
+            },
+        )
         return SessionInfo(
             name=name, real_id=s.get("id"), title=s.get("title", name),
             created=s.get("created", ""), last_used=s.get("last_used"),
@@ -236,7 +253,14 @@ class SessionStore:
                 }
 
         await self._save(data)
-        logger.info("SessionStore: deleted session '%s' for chat %d", name, chat_id)
+        logger.info(
+            "Session deleted",
+            extra={
+                "event": "session_deleted",
+                "session_name": name,
+                "chat_id_masked": mask_chat_id(chat_id),
+            },
+        )
         return real_id
 
     async def list_sessions(self, chat_id: int) -> list[SessionInfo]:
@@ -272,7 +296,14 @@ class SessionStore:
         data = await self._load()
         data.setdefault(str(chat_id), {})["model"] = model
         await self._save(data)
-        logger.info("SessionStore: model set to '%s' for chat %d", model, chat_id)
+        logger.info(
+            "Model changed",
+            extra={
+                "event": "model_changed",
+                "model": model,
+                "chat_id_masked": mask_chat_id(chat_id),
+            },
+        )
 
     # ── Public API: prompt tracking ────────────────────────────────
 
@@ -343,4 +374,11 @@ class SessionStore:
             sessions[active_name]["id"] = None
             sessions[active_name]["prompt_count"] = 0
             await self._save(data)
-            logger.info("SessionStore: reset session '%s' for chat %d", active_name, chat_id)
+            logger.info(
+                "Session reset",
+                extra={
+                    "event": "session_reset",
+                    "session_name": active_name,
+                    "chat_id_masked": mask_chat_id(chat_id),
+                },
+            )

@@ -3,11 +3,11 @@
 This is the ONLY class in the entire project that imports telegram.Bot.
 """
 from __future__ import annotations
-import logging
 from telegram import Bot
 from services.bot_port import MessageInfo
+from utils.logging import get_module_logger
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 
 class TelegramAdapter:

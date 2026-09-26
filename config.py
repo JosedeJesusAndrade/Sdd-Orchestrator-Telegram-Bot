@@ -94,26 +94,42 @@ START_TIME = None  # set at startup
 
 
 def setup_logger() -> logging.Logger:
-    """Configure rotating file + console logger."""
+    """Configure rotating file + console logger with structured key=value format.
+
+    Why two different handlers?
+      - Console: minimal prefix (timestamp + level + message). Interactive
+        use — no need to grep by request_id, just scan the terminal.
+      - File: includes [req=...] for correlation and full logger name for
+        forensic search via `grep event=session_created bot.log`.
+
+    Both handlers use KeyValueFormatter to render extra={} fields as
+    `key=value` pairs before the message. See utils/logging.py for details.
+    """
     logger = logging.getLogger("opencode_bot")
     logger.setLevel(logging.INFO)
 
-    # Console handler
+    # Import from utils here to avoid circular import (config is loaded
+    # very early, before utils may be fully initialized).
+    from utils.logging import KeyValueFormatter, RequestIdFilter
+
+    # ── Console handler (no request_id — too noisy for interactive use) ──
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    console_fmt = KeyValueFormatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     console_handler.setFormatter(console_fmt)
     logger.addHandler(console_handler)
 
-    # File handler
+    # ── File handler (with request_id for forensic correlation) ──
     file_handler = logging.handlers.RotatingFileHandler(
         LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
     file_handler.setLevel(logging.INFO)
-    file_fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    file_handler.addFilter(RequestIdFilter())
+    file_fmt = KeyValueFormatter(
+        "%(asctime)s [%(levelname)s] [req=%(request_id)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     file_handler.setFormatter(file_fmt)

@@ -1,8 +1,13 @@
 """Message handlers: text prompts and voice messages.
- 
+  
 Architecture change (Week 2→3):
   All handlers now access services via AppContainer from PTB context
   instead of lazy-importing the bot module.
+
+Phase 2 logging:
+  - Uses per-module logger (`__name__`) instead of the root `config.logger`.
+  - Voice transcription logs DEBUG events (transcribe_voice_skip,
+    transcribe_voice, api_error) with structured fields.
 """
 
 from __future__ import annotations
@@ -14,11 +19,13 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from config import OPENAI_API_KEY, CONTAINER_KEY, logger
-from utils.logging import mask_chat_id
+from config import OPENAI_API_KEY, CONTAINER_KEY
+from utils.logging import get_module_logger, mask_chat_id
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
 from services.container import AppContainer
+
+logger = get_module_logger(__name__)
 
 
 def _get_container(context) -> AppContainer:
@@ -26,11 +33,30 @@ def _get_container(context) -> AppContainer:
     return context.application.bot_data[CONTAINER_KEY]
 
 
-async def transcribe_voice(file_path: str) -> str | None:
-    """Transcribe voice audio to text using OpenAI Whisper API."""
+async def transcribe_voice(file_path: str, chat_id: int | None = None) -> str | None:
+    """Transcribe voice audio to text using OpenAI Whisper API.
+
+    Phase 2 logging:
+      - DEBUG event=transcribe_voice_skip when API key missing (was WARNING)
+      - DEBUG event=transcribe_voice on entry (with chat_id_masked)
+      - ERROR event=api_error on OpenAI/HTTP failures (provider=openai)
+      - ERROR event=voice_transcribe_error for other failures
+    """
+    masked_cid = mask_chat_id(chat_id) if chat_id is not None else "-"
+
     if not OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY not set — skipping voice transcription")
+        # Downgraded to DEBUG — this is a config detail, not a runtime event.
+        # Operators check OPENAI_API_KEY during deployment, not at runtime.
+        logger.debug(
+            "OPENAI_API_KEY not set — skipping voice transcription",
+            extra={"event": "transcribe_voice_skip", "chat_id_masked": masked_cid},
+        )
         return None
+
+    logger.debug(
+        "Transcribe voice",
+        extra={"event": "transcribe_voice", "chat_id_masked": masked_cid},
+    )
 
     try:
         from openai import AsyncOpenAI
@@ -46,10 +72,41 @@ async def transcribe_voice(file_path: str) -> str | None:
         return transcript.strip() if transcript else None
 
     except ImportError:
-        logger.error("openai package not installed. Run: pip install openai")
+        logger.error(
+            "openai package not installed",
+            extra={
+                "event": "voice_transcribe_error",
+                "chat_id_masked": masked_cid,
+                "error_type": "ImportError",
+                "hint": "Run: pip install openai",
+            },
+        )
         return None
     except Exception as e:
-        logger.error("Voice transcription failed: %s", e)
+        # Differentiate API errors (HTTP) from other failures.
+        # openai package raises APIStatusError for HTTP 4xx/5xx.
+        status = getattr(e, "status_code", None)
+        if status is not None:
+            logger.error(
+                "Voice transcription API error",
+                extra={
+                    "event": "api_error",
+                    "provider": "openai",
+                    "status": status,
+                    "error": str(e),
+                    "chat_id_masked": masked_cid,
+                },
+            )
+        else:
+            logger.error(
+                "Voice transcription failed",
+                extra={
+                    "event": "voice_transcribe_error",
+                    "chat_id_masked": masked_cid,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                },
+            )
         return None
 
 
@@ -76,7 +133,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             temp_path = tmp.name
         await file.download_to_drive(temp_path)
 
-        text = await transcribe_voice(temp_path)
+        text = await transcribe_voice(temp_path, chat_id=chat_id)
 
         if not text:
             await progress_msg.edit_text(
@@ -103,7 +160,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
         )
     except Exception as e:
-        logger.error("Voice handler error: %s", e)
+        # Why extra={} here? The bare "%s" formatter above meant we lost the
+        # machine-readable event index and any correlated fields (chat_id,
+        # error_type). The voice path is high-signal for diagnosing audio
+        # pipeline issues, so capture the exception type explicitly so we can
+        # grep for `event=voice_handler_error error_type=...` later.
+        logger.error(
+            "Voice handler error",
+            extra={
+                "event": "voice_handler_error",
+                "chat_id_masked": mask_chat_id(chat_id),
+                "error_type": type(e).__name__,
+                "error": str(e),
+            },
+        )
         try:
             await progress_msg.edit_text(
                 "\u274c Error al procesar el audio. Intentá de nuevo."

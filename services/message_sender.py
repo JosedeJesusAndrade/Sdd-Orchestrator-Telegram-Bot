@@ -19,12 +19,12 @@ Architecture rationale:
 
 from __future__ import annotations
 
-import logging
 from telegram import Update
 from services.bot_port import BotPort, MessageInfo
 from formatting.markdown import split_message
+from utils.logging import get_module_logger
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 
 class MessageSender:

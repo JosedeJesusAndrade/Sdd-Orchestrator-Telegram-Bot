@@ -14,17 +14,19 @@ from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import OPENCODE_CMD, DEFAULT_SESSION_NAME, CONTAINER_KEY, INTERNAL_SUBPROCESS_TIMEOUT, logger
+from config import OPENCODE_CMD, DEFAULT_SESSION_NAME, CONTAINER_KEY, INTERNAL_SUBPROCESS_TIMEOUT
 from persistence.sessions import (
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
 )
 from opencode.client import query_opencode_db
-from utils.logging import mask_chat_id
+from utils.logging import get_module_logger, mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.session_store import SessionExistsError, SessionNotFoundError
 from services.container import AppContainer
 from locales import get_strings
+
+logger = get_module_logger(__name__)
 
 
 def _get_container(context) -> AppContainer:

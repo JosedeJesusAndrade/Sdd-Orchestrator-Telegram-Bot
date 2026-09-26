@@ -32,7 +32,6 @@ from config import (
     OPENAI_API_KEY, OPENCODE_CMD,
     SESSIONS_PATH,
     CONNECTIVITY_CHECK_INTERVAL, CONNECTIVITY_FIRST_CHECK_DELAY,
-    logger,
 )
 from persistence.sessions import fetch_opencode_sessions
 from opencode.client import query_opencode_db
@@ -43,6 +42,9 @@ from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.telegram_adapter import TelegramAdapter
 from services.ai_provider_factory import AIProviderFactory
 from services.container import AppContainer
+from utils.logging import get_module_logger
+
+logger = get_module_logger(__name__)
 
 from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
@@ -243,7 +245,16 @@ def build_application() -> Application:
     # full traceback on every retry. We handle it cleanly in our error_handler.
     _suppress_network_tracebacks()
 
-    logger.info("Starting OpenCode Telegram Bot Bridge")
+    logger.info(
+        "Bot starting",
+        extra={
+            "event": "bot_start",
+            "workdir": OPENCODE_WORKDIR,
+            "timeout": OPENCODE_TIMEOUT,
+            "allowed_chats": len(ALLOWED_CHAT_IDS),
+            "default_model": DEFAULT_MODEL,
+        },
+    )
     logger.info("Workdir: %s", OPENCODE_WORKDIR)
     logger.info("Timeout: %ds", OPENCODE_TIMEOUT)
     logger.info("Allowed chats: %d", len(ALLOWED_CHAT_IDS))
@@ -396,7 +407,14 @@ async def run_bot() -> None:
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
-    logger.info("Bot stopped.")
+    logger.info(
+        "Bot stopped",
+        extra={
+            "event": "bot_stop",
+            "exit_code": exit_code[0],
+            "uptime_s": round(time.time() - start_time, 2),
+        },
+    )
     sys.exit(exit_code[0])
 
 
@@ -408,4 +426,7 @@ if __name__ == "__main__":
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    loop.run_until_complete(run_bot())
+    try:
+        loop.run_until_complete(run_bot())
+    except SystemExit:
+        raise

@@ -33,7 +33,6 @@ Architecture rationale:
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -43,14 +42,14 @@ from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME,
     OPENCODE_TIMEOUT, OPENCODE_WORKDIR,
     PROGRESS_UPDATE_INTERVAL,
-    logger,
 )
+from utils.logging import get_module_logger
 
 if TYPE_CHECKING:
     from services.session_store import SessionStore
     from services.message_sender import MessageSender
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 
 class PromptAlreadyRunningError(Exception):
@@ -119,6 +118,9 @@ class PromptService:
         This is the main entry point. It handles the full lifecycle:
         session sync → execution → delivery → cleanup.
 
+        Phase 2 logging: emits prompt_start, prompt_complete, prompt_error
+        events with duration tracking and chat_id_masked.
+
         Args:
             chat_id: Telegram chat ID.
             prompt_text: The user's prompt text.
@@ -130,19 +132,33 @@ class PromptService:
         Raises:
             PromptAlreadyRunningError: if a prompt is already running.
         """
+        from utils.logging import mask_chat_id
+
         if chat_id in self._running:
             raise PromptAlreadyRunningError(
                 f"Chat {chat_id} already has a running prompt"
             )
+
+        masked_cid = mask_chat_id(chat_id)
+        start_time = time.monotonic()
+        model = await self._store.get_model(chat_id)
+
+        logger.info(
+            "Prompt started",
+            extra={
+                "event": "prompt_start",
+                "chat_id_masked": masked_cid,
+                "model": model,
+            },
+        )
 
         try:
             task = asyncio.current_task()
             if task is not None:
                 self._running[chat_id] = task
 
-            # 1. Resolve session and model
+            # 1. Resolve session (model already resolved above for logging)
             session = await self._store.get_active_session(chat_id)
-            model = await self._store.get_model(chat_id)
 
             if update_for_logging is not None:
                 self._log_prompt(chat_id, prompt_text, model)
@@ -177,6 +193,31 @@ class PromptService:
 
             return result["stdout"]
 
+        except Exception as exc:
+            elapsed = time.monotonic() - start_time
+            logger.error(
+                "Prompt failed",
+                extra={
+                    "event": "prompt_error",
+                    "chat_id_masked": masked_cid,
+                    "model": model,
+                    "duration_s": round(elapsed, 3),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            raise
+        else:
+            elapsed = time.monotonic() - start_time
+            logger.info(
+                "Prompt complete",
+                extra={
+                    "event": "prompt_complete",
+                    "chat_id_masked": masked_cid,
+                    "model": model,
+                    "duration_s": round(elapsed, 3),
+                },
+            )
         finally:
             self._running.pop(chat_id, None)
             self._cancel.discard(chat_id)
@@ -321,12 +362,25 @@ class PromptService:
         active = await self._store.get_active_session(chat_id)
         if active is not None and not active.real_id:
             await self._store.update_session_id(chat_id, real_id)
-            logger.info("Captured session ID %s for chat %s", real_id, chat_id)
+            from utils.logging import mask_chat_id
+            logger.info(
+                "Captured OpenCode session ID",
+                extra={
+                    "event": "session_id_captured",
+                    "chat_id_masked": mask_chat_id(chat_id),
+                    "session_name": active.name,
+                },
+            )
 
     # ── Internal: logging ───────────────────────────────────────────
 
     def _log_prompt(self, chat_id: int, prompt: str, model: str) -> None:
-        """Log the incoming prompt (with credential redaction)."""
+        """Log the incoming prompt (with credential redaction).
+
+        Phase 2 logging: structured `event=prompt_received` with chat_id_masked,
+        model, prompt_length, and (truncated) preview. Credentials in the
+        prompt are replaced with `[REDACTED]` before logging.
+        """
         from utils.logging import mask_chat_id
 
         truncated = prompt[:100] + "..." if len(prompt) > 100 else prompt
@@ -336,11 +390,14 @@ class PromptService:
                 safe_prompt = "[REDACTED - possible credential]"
                 break
         logger.info(
-            "Request from %s | prompt=%r | len=%d | model=%s",
-            mask_chat_id(chat_id),
-            safe_prompt,
-            len(prompt),
-            model,
+            "Prompt received",
+            extra={
+                "event": "prompt_received",
+                "chat_id_masked": mask_chat_id(chat_id),
+                "model": model,
+                "prompt_length": len(prompt),
+                "preview": safe_prompt,
+            },
         )
 
     async def _update_progress(self, chat_id: int, proc_msg) -> None:

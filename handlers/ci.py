@@ -189,8 +189,15 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     import logging
-    logger = logging.getLogger("opencode_bot")
-    logger.info("🔄 Auto-reinicio solicitado vía Telegram — iniciando graceful shutdown (exit code 42)")
+    from utils.logging import get_module_logger
+    logger = get_module_logger(__name__)
+    logger.info(
+        "Auto-restart requested",
+        extra={
+            "event": "auto_restart",
+            "exit_code": 42,
+        },
+    )
 
     # Trigger graceful shutdown via the shared stop_event + exit_code
     # The bot will: save sessions → cancel monitor → stop polling → shutdown → sys.exit(42)

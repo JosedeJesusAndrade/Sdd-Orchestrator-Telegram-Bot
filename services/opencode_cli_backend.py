@@ -1,27 +1,49 @@
-"""OpenCode CLI backend — executes prompts via subprocess."""
+"""OpenCode CLI backend — executes prompts via subprocess.
+
+Phase 2 logging: every subprocess execution emits structured events:
+  - INFO    event=subprocess_start     (cmd, model)
+  - INFO    event=subprocess_complete  (cmd, model, returncode, duration_s)
+  - WARNING event=subprocess_timeout   (cmd, timeout_s)
+  - ERROR   event=subprocess_error     (cmd, model, returncode, stderr)
+"""
 from __future__ import annotations
+
 import asyncio
 import os
 import subprocess
-import logging
-from services.ai_backend import AIBackendResult
+import time
+from typing import TYPE_CHECKING
 
-logger = logging.getLogger(__name__)
+from services.ai_backend import AIBackendResult
+from utils.logging import get_module_logger
+
+if TYPE_CHECKING:
+    pass
+
+
+logger = get_module_logger(__name__)
 
 
 class OpenCodeCLIBackend:
     """Executes OpenCode prompts via CLI subprocess."""
-    
+
     def __init__(self, opencode_cmd: str, workdir: str, timeout: int = 300):
         self._cmd = opencode_cmd
         self._workdir = workdir
         self._timeout = timeout
         self._current_process: subprocess.Popen | None = None
-    
+
     async def execute(
         self, prompt: str, model: str, session_id: str | None,
         agent: str | None = None, workdir: str | None = None,
     ) -> AIBackendResult:
+        """Execute a prompt via the OpenCode CLI subprocess.
+
+        Phase 2 logging: emits subprocess_start/complete/timeout/error events
+        with structured fields. The `cmd` field is the OpenCode CLI name
+        (not the full prompt) — prompts may contain user data we don't want
+        in logs.
+        """
         cmd_parts = [self._cmd, "run"]
         if model:
             cmd_parts.extend(["--model", model])
@@ -36,6 +58,17 @@ class OpenCodeCLIBackend:
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
 
+        logger.info(
+            "Subprocess start",
+            extra={
+                "event": "subprocess_start",
+                "cmd": self._cmd,
+                "model": model,
+                "workdir": effective_workdir,
+            },
+        )
+        start_time = time.monotonic()
+
         proc = await asyncio.create_subprocess_exec(
             *cmd_parts,
             stdout=subprocess.PIPE,
@@ -44,17 +77,55 @@ class OpenCodeCLIBackend:
             env=env,
         )
         self._current_process = proc
-        
+
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self._timeout,
             )
+            elapsed = time.monotonic() - start_time
+            returncode = proc.returncode or 0
+
+            if returncode != 0:
+                logger.error(
+                    "Subprocess failed",
+                    extra={
+                        "event": "subprocess_error",
+                        "cmd": self._cmd,
+                        "model": model,
+                        "returncode": returncode,
+                        "duration_s": round(elapsed, 3),
+                        "stderr": (stderr.decode("utf-8", errors="replace") if stderr else "")[:500],
+                    },
+                )
+            else:
+                logger.info(
+                    "Subprocess complete",
+                    extra={
+                        "event": "subprocess_complete",
+                        "cmd": self._cmd,
+                        "model": model,
+                        "returncode": returncode,
+                        "duration_s": round(elapsed, 3),
+                    },
+                )
+
             return AIBackendResult(
                 stdout=stdout.decode("utf-8", errors="replace") if stdout else "",
                 stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
-                returncode=proc.returncode or 0,
+                returncode=returncode,
             )
         except asyncio.TimeoutError:
+            elapsed = time.monotonic() - start_time
+            logger.warning(
+                "Subprocess timeout",
+                extra={
+                    "event": "subprocess_timeout",
+                    "cmd": self._cmd,
+                    "model": model,
+                    "timeout_s": self._timeout,
+                    "elapsed_s": round(elapsed, 3),
+                },
+            )
             self.cancel()
             return AIBackendResult(
                 stderr=f"Timeout: el prompt tardó más de {self._timeout}s.",
@@ -63,7 +134,7 @@ class OpenCodeCLIBackend:
             )
         finally:
             self._current_process = None
-    
+
     def cancel(self) -> None:
         if self._current_process is None:
             return

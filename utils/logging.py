@@ -44,6 +44,48 @@ def get_module_logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(f"opencode_bot.{name}")
 
 
+# ── Swallowed exceptions (roadmap item 4) ───────────────────────────────
+# WHY A DEDICATED LOGGER NAMESPACE:
+#   `log_exception()` records caught-AND-recovered exceptions (the "silent
+#   except" pattern) so they leave a forensic trail without becoming user
+#   errors. Records go to `opencode_bot.swallowed.<module>`, NOT to the
+#   module's normal `opencode_bot.<module>` logger.
+#
+#   - Traceability: a corrupt sessions.json, a zombie subprocess, or a
+#     Telegram edit that never lands is invisible today. This namespace
+#     makes every recovery greppable (`grep event=... bot.log`) w/ traceback.
+#   - One-knob silencing (ETC): because the name is hierarchical, ONE line
+#     in config.setup_logger() silences every swallowed log at once:
+#         logging.getLogger("opencode_bot.swallowed").setLevel(logging.WARNING)
+#     Children inherit the parent level, so the knob covers all modules.
+#   - Hierarchical filtering: raising a single child
+#     (`...swallowed.services.message_sender`) isolates one noisy module.
+#   - TRADEOFF: records appear under `opencode_bot.swallowed.<module>` instead
+#     of the usual `opencode_bot.<module>` name, so the owning module is
+#     encoded in the swallowed logger name. Deliberate: it is the price for
+#     independent one-knob control and keeps swallowed noise out of the
+#     normal module stream.
+def log_exception(
+    event: str, *, module: str, level: int = logging.DEBUG, **fields: object
+) -> None:
+    """Log a caught-and-recovered exception with traceback into
+    `opencode_bot.swallowed.<module>`.
+
+    MUST be called from inside an `except` block: `exc_info=True` reads
+    sys.exc_info() at call time, so no `e` argument is needed.
+
+    Args:
+        event: Machine-readable event name (e.g. "session_map_load_error").
+        module: Caller's `__name__` — used to build the swallowed namespace.
+        level: Severity (default DEBUG). Driven by the design severity table.
+        **fields: Structured fields rendered as key=value by KeyValueFormatter
+            (e.g. path=..., error_type=..., pid=...).
+    """
+    logging.getLogger(f"opencode_bot.swallowed.{module}").log(
+        level, event, exc_info=True, extra={"event": event, **fields}
+    )
+
+
 # ── Request ID context propagation ────────────────────────────────────────
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(

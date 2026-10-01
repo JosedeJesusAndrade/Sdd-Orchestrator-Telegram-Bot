@@ -9,13 +9,14 @@ Phase 2 logging: every subprocess execution emits structured events:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import time
 from typing import TYPE_CHECKING
 
 from services.ai_backend import AIBackendResult
-from utils.logging import get_module_logger
+from utils.logging import get_module_logger, log_exception
 
 if TYPE_CHECKING:
     pass
@@ -147,4 +148,9 @@ class OpenCodeCLIBackend:
             else:
                 self._current_process.terminate()
         except Exception:
-            pass
+            log_exception(
+                "subprocess_kill_failed",
+                module=__name__,
+                level=logging.WARNING,
+                pid=self._current_process.pid,
+            )

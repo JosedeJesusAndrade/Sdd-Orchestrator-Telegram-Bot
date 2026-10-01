@@ -12,6 +12,7 @@ Phase 2 logging:
 
 from __future__ import annotations
 
+import logging
 import time
 
 from telegram import Update
@@ -21,7 +22,7 @@ from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME, CONTAINER_KEY,
     MODEL_ALIASES, resolve_model,
 )
-from utils.logging import get_module_logger, mask_chat_id
+from utils.logging import get_module_logger, log_exception, mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
@@ -96,7 +97,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if br.returncode == 0:
                 branch = br.stdout.strip()
         except Exception:
-            pass
+            log_exception(
+                "git_branch_lookup_failed",
+                module=__name__,
+                level=logging.DEBUG,
+            )
 
     # Build session info
     if session is not None:
@@ -119,6 +124,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 last_dt = datetime.fromisoformat(session.last_used)
                 last_used = relative_time(last_dt)
             except Exception:
+                # Malformed timestamp: show the raw value; silence is fine.
                 last_used = str(session.last_used)
 
         # For created time
@@ -128,6 +134,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 created_dt = datetime.fromisoformat(session.created)
                 first_msg = relative_time(created_dt)
             except Exception:
+                # Malformed timestamp: fall back to a truncated raw value.
                 first_msg = session.created[:19] if session.created else "N/A"
     else:
         session_name = "-"
@@ -330,6 +337,11 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         vm = re.search(r'version\s*=\s*"([^"]+)"', content)
         version = vm.group(1) if vm else "?"
     except Exception:
+        log_exception(
+            "health_version_read_failed",
+            module=__name__,
+            level=logging.DEBUG,
+        )
         version = "?"
     
     # Uptime
@@ -342,7 +354,13 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         me = await container.bot_port.get_me()
         bot_user = me.get("username", "?")
         connected = "✅ Conectado"
-    except Exception:
+    except Exception as e:
+        log_exception(
+            "health_get_me_failed",
+            module=__name__,
+            level=logging.WARNING,
+            error_type=type(e).__name__,
+        )
         bot_user = "?"
         connected = "❌ Sin conexión"
     
@@ -352,6 +370,11 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         oc = await fetch_opencode_sessions()
         oc_count = len(oc)
     except Exception:
+        log_exception(
+            "health_oc_sessions_failed",
+            module=__name__,
+            level=logging.DEBUG,
+        )
         oc_count = "?"
     
     # Per-chat info

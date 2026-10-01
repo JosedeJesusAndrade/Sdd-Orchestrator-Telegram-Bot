@@ -2,14 +2,16 @@
 Handles sessions.json with lock protection, TTL cache, and atomic writes."""
 
 import json
+import logging
 import re
+import shutil
 import time
 import asyncio
 import subprocess
 from pathlib import Path
 
 from config import SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT
-from utils.logging import get_module_logger
+from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
 
@@ -34,12 +36,45 @@ def invalidate_opencode_sessions_cache() -> None:
     _opencode_sessions_cache_time = 0
 
 
+def _backup_corrupt_session_db() -> None:
+    """Move the unparseable sessions.json aside so data is not permanently lost.
+
+    Uses shutil.move (rename): the corrupt file leaves the active path, so the
+    next save writes a fresh sessions.json, while the original survives for
+    forensic recovery under a timestamped sibling. Repeated corruptions produce
+    distinct names and never clobber earlier backups.
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = SESSION_DB.parent / f"{SESSION_DB.name}.corrupt-{stamp}"
+    try:
+        shutil.move(str(SESSION_DB), str(backup))
+    except Exception:
+        # A failed backup must not be silent. The corrupt file stays in place,
+        # so nothing is destroyed even when the rename fails.
+        log_exception(
+            "session_backup_failed",
+            module=__name__,
+            level=logging.WARNING,
+            path=str(SESSION_DB),
+            backup_path=str(backup),
+        )
+
+
 def load_session_map() -> dict:
     """Load {chat_id: {active, sessions: {name: {id, title, created, last_used, prompt_count}}}}"""
     if SESSION_DB.exists():
         try:
             return json.loads(SESSION_DB.read_text(encoding="utf-8"))
         except Exception:
+            # Corrupt/unreadable store: falling back to {} hides data loss, so
+            # leave an ERROR trail with the path and preserve the original file.
+            log_exception(
+                "session_map_load_error",
+                module=__name__,
+                level=logging.ERROR,
+                path=str(SESSION_DB),
+            )
+            _backup_corrupt_session_db()
             return {}
     return {}
 
@@ -92,8 +127,13 @@ def parse_opencode_session_list(output: str) -> list[dict]:
             })
     # O5: Warn if parser returned nothing but input had content (format may have changed)
     if not sessions and output.strip():
-        logger.warning("parse_opencode_session_list: no sessions parsed from output (len=%d). "
-                       "First 200 chars: %r", len(output.strip()), output.strip()[:200])
+        logger.warning(
+            "OpenCode session list parse empty",
+            extra={
+                "event": "oc_session_parse_empty",
+                "output_len": len(output.strip()),
+            },
+        )
     return sessions
 
 
@@ -119,7 +159,14 @@ async def fetch_opencode_sessions() -> list[dict]:
         )
 
         if result.returncode != 0:
-            logger.warning(f"opencode session list failed: {result.stderr.strip()}")
+            logger.warning(
+                "OpenCode session list failed",
+                extra={
+                    "event": "oc_session_list_failed",
+                    "returncode": result.returncode,
+                    "stderr": result.stderr.strip(),
+                },
+            )
             return []
 
         sessions = parse_opencode_session_list(result.stdout)
@@ -127,10 +174,23 @@ async def fetch_opencode_sessions() -> list[dict]:
         _opencode_sessions_cache_time = now
         return sessions
     except subprocess.TimeoutExpired:
-        logger.warning("opencode session list timed out")
+        logger.warning(
+            "OpenCode session list timed out",
+            extra={
+                "event": "oc_session_list_timeout",
+                "timeout_s": INTERNAL_SUBPROCESS_TIMEOUT,
+            },
+        )
         return []
     except Exception as e:
-        logger.error(f"Failed to fetch opencode sessions: {e}")
+        logger.error(
+            "Failed to fetch OpenCode sessions",
+            extra={
+                "event": "oc_session_fetch_error",
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
+        )
         return []
 
 

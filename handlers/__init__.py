@@ -51,8 +51,11 @@ def authorized(
         update = args[0] if args else kwargs.get("update")
         if update is None:
             logger.error(
-                "@authorized could not find Update in %s",
-                handler.__name__,
+                "Update missing in authorized handler",
+                extra={
+                    "event": "authorized_missing_update",
+                    "handler": handler.__name__,
+                },
             )
             return
 

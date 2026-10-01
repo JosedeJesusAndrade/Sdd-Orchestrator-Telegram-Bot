@@ -12,6 +12,7 @@ Phase 2 logging:
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 
@@ -20,7 +21,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
 from config import OPENAI_API_KEY, CONTAINER_KEY
-from utils.logging import get_module_logger, mask_chat_id
+from utils.logging import get_module_logger, log_exception, mask_chat_id
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
 from services.container import AppContainer
@@ -179,13 +180,21 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "\u274c Error al procesar el audio. Intentá de nuevo."
             )
         except Exception:
-            pass
+            log_exception(
+                "voice_error_edit_failed",
+                module=__name__,
+                level=logging.DEBUG,
+            )
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
             except Exception:
-                pass
+                log_exception(
+                    "voice_temp_cleanup_failed",
+                    module=__name__,
+                    level=logging.WARNING,
+                )
 
 
 @authorized

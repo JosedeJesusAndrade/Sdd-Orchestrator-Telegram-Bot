@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 from telegram import Update
@@ -19,7 +20,7 @@ from persistence.sessions import (
     fetch_opencode_sessions, invalidate_opencode_sessions_cache,
 )
 from opencode.client import query_opencode_db
-from utils.logging import get_module_logger, mask_chat_id
+from utils.logging import get_module_logger, log_exception, mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.session_store import SessionExistsError, SessionNotFoundError
@@ -72,6 +73,11 @@ async def _session_list(update: Update, chat_id: int, container: AppContainer) -
     try:
         oc_sessions = await fetch_opencode_sessions()
     except Exception:
+        log_exception(
+            "oc_sessions_fetch_failed",
+            module=__name__,
+            level=logging.DEBUG,
+        )
         oc_sessions = []
 
     # 3. Merge: OpenCode sessions not yet adopted
@@ -96,6 +102,7 @@ async def _session_list(update: Update, chat_id: int, container: AppContainer) -
                     last_dt = datetime.fromisoformat(s.last_used)
                     last_used_str = ", {}".format(relative_time(last_dt))
                 except Exception:
+                    # Malformed timestamp: omit the ", hace X" suffix.
                     pass
             lines.append(
                 "{marker} {name} → `{id}` ({count} prompts{lu})".format(
@@ -181,7 +188,14 @@ async def _session_delete(update: Update, chat_id: int, name: str | None, contai
             )
         except Exception as e:
             logger.warning(
-                "Failed to delete OpenCode session %s: %s", real_id, e,
+                "OpenCode session delete failed",
+                extra={
+                    "event": "oc_session_delete_failed",
+                    "real_id": real_id,
+                    "chat_id": chat_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
             )
 
     await update.message.reply_text(
@@ -222,6 +236,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None, containe
             last_dt = datetime.fromisoformat(last_used)
             last_used_str = relative_time(last_dt)
         except Exception:
+            # Malformed timestamp: fall back to the raw value.
             last_used_str = str(last_used)
 
     created_display = created[:19] if created and created != "\u2014" else created
@@ -263,7 +278,11 @@ async def _session_info(update: Update, chat_id: int, name: str | None, containe
                         "    Modelo (BD): {m}".format(m=row['model']),
                     )
         except Exception:
-            pass
+            log_exception(
+                "oc_db_enrich_failed",
+                module=__name__,
+                level=logging.DEBUG,
+            )
 
     await update.message.reply_text("\n".join(lines))
 

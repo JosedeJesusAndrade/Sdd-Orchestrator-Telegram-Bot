@@ -42,7 +42,7 @@ from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.telegram_adapter import TelegramAdapter
 from services.ai_provider_factory import AIProviderFactory
 from services.container import AppContainer
-from utils.logging import get_module_logger
+from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
 
@@ -207,7 +207,9 @@ async def error_handler(update: object | None, context: ContextTypes.DEFAULT_TYP
 
     # ── Any other error: log full traceback for debugging ──
     logger.error(
-        "Exception while handling an update:", exc_info=context.error
+        "Exception while handling an update:",
+        exc_info=context.error,
+        extra={"event": "unhandled_exception"},
     )
 
 
@@ -227,8 +229,13 @@ async def _connectivity_monitor(app: Application, stop_event: asyncio.Event) -> 
             _connection_state.mark_failure(
                 RuntimeError("sin conexión a internet")
             )
-        except Exception:
-            pass  # ignore other transient errors
+        except Exception as e:
+            log_exception(
+                "connectivity_check_error",
+                module=__name__,
+                level=logging.DEBUG,
+                error_type=type(e).__name__,
+            )
 
         # Wait 30s between checks, checking stop_event every second
         for _ in range(CONNECTIVITY_CHECK_INTERVAL):
@@ -367,7 +374,14 @@ async def run_bot() -> None:
                     col_names = [c.get("name", "?") for c in cols]
                     logger.info(f"  {tname}: {', '.join(col_names)}")
         except Exception as e:
-            logger.info(f"DB schema exploration failed: {e}")
+            logger.warning(
+                "DB schema exploration failed",
+                extra={
+                    "event": "db_schema_explore_error",
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
     else:
         logger.info("DB schema exploration skipped (set EXPLORE_DB=1 to enable)")
 
@@ -381,7 +395,15 @@ async def run_bot() -> None:
             )
             logger.info("Startup notification sent to chat %s", cid)
         except Exception as e:
-            logger.warning("Failed to notify chat %s on startup: %s", cid, e)
+            logger.warning(
+                "Startup notification failed",
+                extra={
+                    "event": "startup_notify_failed",
+                    "chat_id": cid,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
 
     def signal_handler() -> None:
         logger.info("Received shutdown signal...")
@@ -403,6 +425,9 @@ async def run_bot() -> None:
     try:
         await connectivity_task
     except asyncio.CancelledError:
+        # connectivity_task was cancelled during graceful shutdown (SIGINT/
+        # SIGTERM); awaiting it only surfaces the cancellation — silence is
+        # correct, it is not an error.
         pass
     await app.updater.stop()
     await app.stop()

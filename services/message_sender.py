@@ -19,10 +19,12 @@ Architecture rationale:
 
 from __future__ import annotations
 
+import logging
+
 from telegram import Update
 from services.bot_port import BotPort, MessageInfo
 from formatting.markdown import split_message
-from utils.logging import get_module_logger
+from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
 
@@ -61,7 +63,15 @@ class MessageSender:
         try:
             return await self._bot.send_message(chat_id=chat_id, text=text)
         except Exception as e:
-            logger.error("Failed to send plain message to %s: %s", chat_id, e)
+            logger.error(
+                "Failed to send plain message",
+                extra={
+                    "event": "send_plain_error",
+                    "chat_id": chat_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             return None
 
     async def edit_message(
@@ -78,12 +88,21 @@ class MessageSender:
                 chat_id=chat_id, message_id=message_id, text=text,
             )
         except Exception:
+            log_exception(
+                "message_edit_failed",
+                module=__name__,
+                level=logging.DEBUG,
+            )
             try:
                 await self._bot.delete_message(
                     chat_id=chat_id, message_id=message_id,
                 )
             except Exception:
-                pass
+                log_exception(
+                    "message_delete_failed",
+                    module=__name__,
+                    level=logging.DEBUG,
+                )
             return None
 
     async def reply_formatted(self, update: Update, text: str) -> list[MessageInfo]:
@@ -117,9 +136,22 @@ class MessageSender:
                 parse_mode="MarkdownV2",
             )
         except Exception:
+            log_exception(
+                "mdv2_first_attempt_failed",
+                module=__name__,
+                level=logging.DEBUG,
+            )
             clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
             try:
                 return await self._bot.send_message(chat_id=chat_id, text=clean)
             except Exception as e:
-                logger.error("MDV2 fallback also failed for %s: %s", chat_id, e)
+                logger.error(
+                    "MDV2 fallback failed",
+                    extra={
+                        "event": "mdv2_fallback_error",
+                        "chat_id": chat_id,
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
+                )
                 return None

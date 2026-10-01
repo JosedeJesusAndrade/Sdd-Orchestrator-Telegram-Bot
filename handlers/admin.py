@@ -8,12 +8,14 @@ Architecture change (Week 2→3):
 
 from __future__ import annotations
 
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import DEFAULT_SESSION_NAME, CONTAINER_KEY
 from persistence.sessions import load_session_map_safe, fetch_opencode_sessions
-from utils.logging import get_module_logger, mask_chat_id
+from utils.logging import get_module_logger, log_exception, mask_chat_id
 from handlers import authorized
 from services.container import AppContainer
 
@@ -46,7 +48,10 @@ async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Test message sent with MarkdownV2. Check if formatting works."
         )
     else:
-        logger.warning("MarkdownV2 test failed: send_formatted returned empty")
+        logger.warning(
+            "MarkdownV2 test failed",
+            extra={"event": "mdv2_test_failed", "chat_id": chat_id},
+        )
         await update.message.reply_text(
             "MarkdownV2 test FAILED. Check bot logs for details."
         )
@@ -88,6 +93,11 @@ async def session_preview_command(
                 "\u2022 `{}...` {}".format(s["id"][:20], s["title"][:40])
             )
     except Exception as e:
+        log_exception(
+            "session_preview_fetch_error",
+            module=__name__,
+            level=logging.WARNING,
+        )
         lines.append("\u274c Error: {}".format(e))
 
     msg = "\n".join(lines)

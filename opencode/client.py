@@ -18,7 +18,13 @@ async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]
         if match:
             identifier = match.group(2)
             if not re.match(allowed_pattern, identifier):
-                logger.warning(f"Blocked potentially unsafe SQL query: {sql[:100]}")
+                logger.warning(
+                    "Blocked unsafe SQL query",
+                    extra={
+                        "event": "sql_blocked",
+                        "sql_preview": sql[:100].replace("\n", " "),
+                    },
+                )
                 return []
     try:
         loop = asyncio.get_running_loop()
@@ -33,11 +39,25 @@ async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]
             )
         )
         if result.returncode != 0:
-            logger.warning(f"DB query failed: {result.stderr.strip()[:100]}")
+            logger.warning(
+                "DB query failed",
+                extra={
+                    "event": "db_query_failed",
+                    "returncode": result.returncode,
+                    "stderr": result.stderr.strip()[:100],
+                },
+            )
             return []
         return json.loads(result.stdout) if result.stdout.strip() else []
     except Exception as e:
-        logger.warning(f"DB query error: {e}")
+        logger.warning(
+            "DB query error",
+            extra={
+                "event": "db_query_error",
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
+        )
         return []
 
 

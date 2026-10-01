@@ -33,6 +33,7 @@ Architecture rationale:
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -43,7 +44,7 @@ from config import (
     OPENCODE_TIMEOUT, OPENCODE_WORKDIR,
     PROGRESS_UPDATE_INTERVAL,
 )
-from utils.logging import get_module_logger
+from utils.logging import get_module_logger, log_exception
 
 if TYPE_CHECKING:
     from services.session_store import SessionStore
@@ -103,8 +104,13 @@ class PromptService:
         for backend in self._factory._instances.values():
             try:
                 backend.cancel()
-            except Exception:
-                pass
+            except Exception as e:
+                log_exception(
+                    "backend_cancel_failed",
+                    module=__name__,
+                    level=logging.WARNING,
+                    error_type=type(e).__name__,
+                )
         return True
 
     async def execute(
@@ -186,6 +192,9 @@ class PromptService:
             try:
                 await progress_task
             except asyncio.CancelledError:
+                # progress_task was cancelled by us right after the prompt
+                # finished; awaiting it here just collects the CancelledError —
+                # silence is correct, it is not an error.
                 pass
 
             # 4. Deliver response
@@ -331,7 +340,11 @@ class PromptService:
                     chat_id, proc_msg.message_id, "\u2705 Completado."
                 )
             except Exception:
-                pass
+                log_exception(
+                    "completion_edit_failed",
+                    module=__name__,
+                    level=logging.DEBUG,
+                )
 
         # Capture session ID for new sessions
         await self._capture_session_id(chat_id, result["stdout"], session)
@@ -340,7 +353,15 @@ class PromptService:
         try:
             await self._store.increment_prompt_count(chat_id)
         except Exception as e:
-            logger.warning("Failed to increment prompt count: %s", e)
+            logger.warning(
+                "Failed to increment prompt count",
+                extra={
+                    "event": "prompt_count_error",
+                    "chat_id": chat_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
 
     async def _capture_session_id(
         self,
@@ -411,6 +432,12 @@ class PromptService:
                     f"\u23f3 OpenCode procesando... ({elapsed}s)"
                 )
         except asyncio.CancelledError:
+            # _update_progress is the periodic "(Ns)" editor; cancel propagation
+            # is how the prompt loop stops it — expected, not a failure.
             pass
         except Exception:
-            pass
+            log_exception(
+                "progress_update_failed",
+                module=__name__,
+                level=logging.DEBUG,
+            )

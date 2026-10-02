@@ -26,6 +26,7 @@ from utils.logging import get_module_logger, log_exception, mask_chat_id
 from utils.time_formatting import relative_time
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
+from services.telegram_chat_view import TelegramChatView
 from services.container import AppContainer
 from locales import get_strings
 
@@ -258,9 +259,9 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     try:
         await container.prompt_service.execute(
-            chat_id=chat_id,
+            conversation_id=chat_id,
             prompt_text=prompt,
-            update_for_logging=update,
+            view=TelegramChatView(container.message_sender, chat_id),
         )
     except PromptAlreadyRunningError:
         await update.message.reply_text(S.OPEN_BUSY)

@@ -15,14 +15,15 @@ Architecture rationale:
 
   PromptService solves this by:
     - Delegating session I/O to SessionStore
-    - Delegating message delivery to MessageSender
+    - Delegating message delivery to a ChatView (frontend-agnostic)
     - Focusing ONLY on orchestration: build the command, run it,
       route the output to the right delivery method
     - Encapsulating process state (running tasks, cancel flags)
 
   Why a class?
-    - Stateful: tracks running tasks per chat_id
-    - Injectable: SessionStore + MessageSender + AIProviderFactory in constructor
+    - Stateful: tracks running tasks per conversation_id
+    - Injectable: SessionStore + AIProviderFactory in constructor;
+      a per-conversation ChatView is passed to execute()
     - Testable: mock the backend and verify behavior
 
   Week 4: AIProviderFactory replaces direct AIBackend. Per-chat settings
@@ -48,7 +49,7 @@ from utils.logging import get_module_logger, log_exception
 
 if TYPE_CHECKING:
     from services.session_store import SessionStore
-    from services.message_sender import MessageSender
+    from services.chat_view import ChatView, ConversationId, ProgressHandle
 
 logger = get_module_logger(__name__)
 
@@ -65,42 +66,43 @@ class PromptService:
       2. Resolve model + session from SessionStore
       3. Build and execute the opencode CLI command
       4. Capture the session ID on first run
-      5. Format and deliver the response via MessageSender
+      5. Format and deliver the response via a ChatView
       6. Track prompt counts
       7. Support cancellation
+
+    The frontend is abstracted behind ``ChatView``: this service never
+    imports PTB and never touches a ``message_id``.
     """
 
     def __init__(
         self,
         session_store: SessionStore,
-        message_sender: MessageSender,
         provider_factory: object,
     ) -> None:
         self._store = session_store
-        self._sender = message_sender
         self._factory = provider_factory
 
-        # Per-chat running tasks
-        self._running: dict[int, asyncio.Task] = {}
-        # Per-chat cancel flags (set by cancel() before process terminates)
-        self._cancel: set[int] = set()
+        # Per-conversation running tasks
+        self._running: dict[ConversationId, asyncio.Task] = {}
+        # Per-conversation cancel flags (set by cancel() before process terminates)
+        self._cancel: set[ConversationId] = set()
 
     # ── Public API ──────────────────────────────────────────────────
 
-    def is_running(self, chat_id: int) -> bool:
+    def is_running(self, conversation_id: ConversationId) -> bool:
         """Check if a prompt is currently executing for this chat."""
-        return chat_id in self._running
+        return conversation_id in self._running
 
-    def cancel(self, chat_id: int) -> bool:
+    def cancel(self, conversation_id: ConversationId) -> bool:
         """Request cancellation of a running prompt.
 
         Returns True if there was a prompt to cancel, False otherwise.
         Cancellation is asynchronous — the prompt may take a moment
         to actually stop after this returns.
         """
-        if chat_id not in self._running:
+        if conversation_id not in self._running:
             return False
-        self._cancel.add(chat_id)
+        self._cancel.add(conversation_id)
         for backend in self._factory._instances.values():
             try:
                 backend.cancel()
@@ -115,11 +117,11 @@ class PromptService:
 
     async def execute(
         self,
-        chat_id: int,
+        conversation_id: ConversationId,
         prompt_text: str,
-        update_for_logging=None,
+        view: ChatView,
     ) -> str:
-        """Execute a prompt for the given chat.
+        """Execute a prompt for the given conversation.
 
         This is the main entry point. It handles the full lifecycle:
         session sync → execution → delivery → cleanup.
@@ -128,9 +130,9 @@ class PromptService:
         events with duration tracking and chat_id_masked.
 
         Args:
-            chat_id: Telegram chat ID.
+            conversation_id: Conversation key used for session state.
             prompt_text: The user's prompt text.
-            update_for_logging: Optional Update object for logging.
+            view: Frontend surface for progress + delivery (per-conversation).
 
         Returns:
             The raw stdout output from OpenCode.
@@ -140,14 +142,14 @@ class PromptService:
         """
         from utils.logging import mask_chat_id
 
-        if chat_id in self._running:
+        if conversation_id in self._running:
             raise PromptAlreadyRunningError(
-                f"Chat {chat_id} already has a running prompt"
+                f"Chat {conversation_id} already has a running prompt"
             )
 
-        masked_cid = mask_chat_id(chat_id)
+        masked_cid = mask_chat_id(conversation_id)
         start_time = time.monotonic()
-        model = await self._store.get_model(chat_id)
+        model = await self._store.get_model(conversation_id)
 
         logger.info(
             "Prompt started",
@@ -161,44 +163,36 @@ class PromptService:
         try:
             task = asyncio.current_task()
             if task is not None:
-                self._running[chat_id] = task
+                self._running[conversation_id] = task
 
             # 1. Resolve session (model already resolved above for logging)
-            session = await self._store.get_active_session(chat_id)
+            session = await self._store.get_active_session(conversation_id)
 
-            if update_for_logging is not None:
-                self._log_prompt(chat_id, prompt_text, model)
+            self._log_prompt(conversation_id, prompt_text, model)
 
-            # 2. Send "Processing..." indicator
-            proc_msg = await self._sender.send_plain(
-                chat_id, "\u23f3 OpenCode procesando..."
-            )
+            # 2. Open the "Processing..." progress placeholder via the view
+            handle = await view.start_progress("\u23f3 OpenCode procesando...")
 
-            progress_task = asyncio.create_task(self._update_progress(chat_id, proc_msg))
+            progress_task = asyncio.create_task(self._update_progress(handle))
 
             # Check if cancelled during session sync (before backend execution)
-            if chat_id in self._cancel:
-                await self._sender.edit_message(
-                    chat_id, proc_msg.message_id, "\u23f9\ufe0f Cancelado."
-                )
+            if conversation_id in self._cancel:
+                # Stop the periodic updater BEFORE painting the terminal state.
+                # Otherwise it would keep ticking and overwrite "Cancelado."
+                # with "⏳ OpenCode procesando... (Ns)".
+                await self._stop_progress(progress_task)
+                await handle.error("\u23f9\ufe0f Cancelado.")
                 return ""
 
             # 3. Execute OpenCode via AI backend
             result = await self._execute_prompt(
-                chat_id, prompt_text, session, model,
+                conversation_id, prompt_text, session, model, view.source_label,
             )
 
-            progress_task.cancel()
-            try:
-                await progress_task
-            except asyncio.CancelledError:
-                # progress_task was cancelled by us right after the prompt
-                # finished; awaiting it here just collects the CancelledError —
-                # silence is correct, it is not an error.
-                pass
+            await self._stop_progress(progress_task)
 
             # 4. Deliver response
-            await self._deliver_response(chat_id, result, proc_msg, session)
+            await self._deliver_response(conversation_id, result, handle, view, session)
 
             return result["stdout"]
 
@@ -228,17 +222,18 @@ class PromptService:
                 },
             )
         finally:
-            self._running.pop(chat_id, None)
-            self._cancel.discard(chat_id)
+            self._running.pop(conversation_id, None)
+            self._cancel.discard(conversation_id)
 
     # ── Internal: AI backend execution ──────────────────────────────
 
     async def _execute_prompt(
         self,
-        chat_id: int,
+        conversation_id: ConversationId,
         prompt: str,
         session,
         model: str,
+        source_label: str = "",
     ) -> dict:
         """Execute prompt via the AI provider factory.
 
@@ -247,15 +242,15 @@ class PromptService:
 
         Returns a dict with keys: stdout, stderr, returncode, cancelled.
         """
-        provider = await self._store.get_chat_setting(chat_id, "provider", "opencode")
-        timeout_val = await self._store.get_chat_setting(chat_id, "timeout", OPENCODE_TIMEOUT)
-        workdir = await self._store.get_chat_setting(chat_id, "workdir", OPENCODE_WORKDIR)
-        agent = await self._store.get_chat_setting(chat_id, "agent", "sdd-orchestrator")
+        provider = await self._store.get_chat_setting(conversation_id, "provider", "opencode")
+        timeout_val = await self._store.get_chat_setting(conversation_id, "timeout", OPENCODE_TIMEOUT)
+        workdir = await self._store.get_chat_setting(conversation_id, "workdir", OPENCODE_WORKDIR)
+        agent = await self._store.get_chat_setting(conversation_id, "agent", "sdd-orchestrator")
 
         backend = self._factory.get(provider)
 
         # Check if cancelled during settings resolution (before subprocess)
-        if chat_id in self._cancel:
+        if conversation_id in self._cancel:
             return {
                 "stdout": "", "stderr": "", "returncode": 0,
                 "cancelled": True,
@@ -267,21 +262,24 @@ class PromptService:
             session_id=session.real_id if session else None,
             agent=agent,
             workdir=str(workdir),
+            source_label=source_label,
+            timeout=timeout_val,
         )
         return {
             "stdout": result.stdout,
             "stderr": result.stderr,
             "returncode": result.returncode,
-            "cancelled": chat_id in self._cancel or result.cancelled,
+            "cancelled": conversation_id in self._cancel or result.cancelled,
         }
 
     # ── Internal: response delivery ─────────────────────────────────
 
     async def _deliver_response(
         self,
-        chat_id: int,
+        conversation_id: ConversationId,
         result: dict,
-        proc_msg,
+        handle: ProgressHandle,
+        view: ChatView,
         session,
     ) -> None:
         """Format and send the OpenCode response, or show an error."""
@@ -289,9 +287,7 @@ class PromptService:
 
         # Handle cancellation
         if result["cancelled"]:
-            await self._sender.edit_message(
-                chat_id, proc_msg.message_id, "\u23f9\ufe0f Cancelado."
-            )
+            await handle.error("\u23f9\ufe0f Cancelado.")
             return
 
         # Handle hard errors (non-zero exit + empty stdout, or errors via stderr)
@@ -301,10 +297,7 @@ class PromptService:
         )
         if has_error:
             error_text = clean_opencode_output(result["stderr"] or result["stdout"] or "Unknown error")
-            await self._sender.edit_message(
-                chat_id, proc_msg.message_id,
-                f"\u274c Error: {error_text[:500]}",
-            )
+            await handle.error(f"\u274c Error: {error_text[:500]}")
             return
 
         # Process and format the response
@@ -326,19 +319,14 @@ class PromptService:
 
         # Track whether we actually delivered content
         is_success = result["returncode"] == 0
-        response_sent = False
 
-        # Send formatted response
-        sent = await self._sender.send_formatted(chat_id, response)
-        if sent:
-            response_sent = True
+        # Send formatted response via the view
+        response_sent = await view.send(response)
 
-        # Edit "Processing..." to "Completed" only if successful
+        # Close "Processing..." to "Completed" only if successful
         if response_sent and is_success:
             try:
-                await self._sender.edit_message(
-                    chat_id, proc_msg.message_id, "\u2705 Completado."
-                )
+                await handle.finish("\u2705 Completado.")
             except Exception:
                 log_exception(
                     "completion_edit_failed",
@@ -347,17 +335,17 @@ class PromptService:
                 )
 
         # Capture session ID for new sessions
-        await self._capture_session_id(chat_id, result["stdout"], session)
+        await self._capture_session_id(conversation_id, result["stdout"], session)
 
         # Increment prompt count
         try:
-            await self._store.increment_prompt_count(chat_id)
+            await self._store.increment_prompt_count(conversation_id)
         except Exception as e:
             logger.warning(
                 "Failed to increment prompt count",
                 extra={
                     "event": "prompt_count_error",
-                    "chat_id": chat_id,
+                    "chat_id": conversation_id,
                     "error_type": type(e).__name__,
                 },
                 exc_info=True,
@@ -365,7 +353,7 @@ class PromptService:
 
     async def _capture_session_id(
         self,
-        chat_id: int,
+        conversation_id: ConversationId,
         stdout: str,
         session,
     ) -> None:
@@ -380,22 +368,22 @@ class PromptService:
             return
         real_id = match.group(1)
 
-        active = await self._store.get_active_session(chat_id)
+        active = await self._store.get_active_session(conversation_id)
         if active is not None and not active.real_id:
-            await self._store.update_session_id(chat_id, real_id)
+            await self._store.update_session_id(conversation_id, real_id)
             from utils.logging import mask_chat_id
             logger.info(
                 "Captured OpenCode session ID",
                 extra={
                     "event": "session_id_captured",
-                    "chat_id_masked": mask_chat_id(chat_id),
+                    "chat_id_masked": mask_chat_id(conversation_id),
                     "session_name": active.name,
                 },
             )
 
     # ── Internal: logging ───────────────────────────────────────────
 
-    def _log_prompt(self, chat_id: int, prompt: str, model: str) -> None:
+    def _log_prompt(self, conversation_id: ConversationId, prompt: str, model: str) -> None:
         """Log the incoming prompt (with credential redaction).
 
         Phase 2 logging: structured `event=prompt_received` with chat_id_masked,
@@ -414,21 +402,36 @@ class PromptService:
             "Prompt received",
             extra={
                 "event": "prompt_received",
-                "chat_id_masked": mask_chat_id(chat_id),
+                "chat_id_masked": mask_chat_id(conversation_id),
                 "model": model,
                 "prompt_length": len(prompt),
                 "preview": safe_prompt,
             },
         )
 
-    async def _update_progress(self, chat_id: int, proc_msg) -> None:
+    @staticmethod
+    async def _stop_progress(progress_task: asyncio.Task) -> None:
+        """Cancel the periodic progress updater and await its termination.
+
+        Called on EVERY path that reaches a terminal state (normal
+        completion and the pre-execution cancel early return) so a stray
+        ``update()`` can never overwrite "⏹️ Cancelado." / "✅ Completado.".
+        """
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            # Cancelled by us on purpose — collecting the CancelledError is
+            # expected, not an error.
+            pass
+
+    async def _update_progress(self, handle: ProgressHandle) -> None:
         start = time.monotonic()
         try:
             while True:
                 await asyncio.sleep(PROGRESS_UPDATE_INTERVAL)
                 elapsed = int(time.monotonic() - start)
-                await self._sender.edit_message(
-                    chat_id, proc_msg.message_id,
+                await handle.update(
                     f"\u23f3 OpenCode procesando... ({elapsed}s)"
                 )
         except asyncio.CancelledError:

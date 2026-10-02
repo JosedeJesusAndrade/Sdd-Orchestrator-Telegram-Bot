@@ -37,6 +37,8 @@ class OpenCodeCLIBackend:
     async def execute(
         self, prompt: str, model: str, session_id: str | None,
         agent: str | None = None, workdir: str | None = None,
+        source_label: str = "",
+        timeout: int | None = None,
     ) -> AIBackendResult:
         """Execute a prompt via the OpenCode CLI subprocess.
 
@@ -44,7 +46,15 @@ class OpenCodeCLIBackend:
         with structured fields. The `cmd` field is the OpenCode CLI name
         (not the full prompt) — prompts may contain user data we don't want
         in logs.
+
+        Args:
+            timeout: Per-call timeout in seconds (F10). Overrides the
+                constructor's ``self._timeout``. ``None`` means "use the
+                backend default". The effective value is the one used by
+                ``asyncio.wait_for`` AND reported in the timeout event/error
+                so the log is truthful about what actually happened.
         """
+        effective_timeout = timeout if timeout is not None else self._timeout
         cmd_parts = [self._cmd, "run"]
         if model:
             cmd_parts.extend(["--model", model])
@@ -52,9 +62,12 @@ class OpenCodeCLIBackend:
             cmd_parts.extend(["--agent", agent])
         if session_id:
             cmd_parts.extend(["--continue", "--session", session_id])
-        # Prepend Telegram marker + fix Windows newline-as-separator bug
+        # Prepend frontend marker + fix Windows newline-as-separator bug.
+        # The label is supplied by the frontend (ChatView.source_label) so the
+        # execution engine carries no hardcoded frontend branding.
         effective_workdir = workdir or self._workdir
-        cmd_parts.append(f"[📱 Telegram] {prompt}".replace("\n", " "))
+        labeled = f"[{source_label}] {prompt}" if source_label else prompt
+        cmd_parts.append(labeled.replace("\n", " "))
 
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
@@ -81,7 +94,7 @@ class OpenCodeCLIBackend:
 
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout,
+                proc.communicate(), timeout=effective_timeout,
             )
             elapsed = time.monotonic() - start_time
             returncode = proc.returncode or 0
@@ -123,13 +136,13 @@ class OpenCodeCLIBackend:
                     "event": "subprocess_timeout",
                     "cmd": self._cmd,
                     "model": model,
-                    "timeout_s": self._timeout,
+                    "timeout_s": effective_timeout,
                     "elapsed_s": round(elapsed, 3),
                 },
             )
             self.cancel()
             return AIBackendResult(
-                stderr=f"Timeout: el prompt tardó más de {self._timeout}s.",
+                stderr=f"Timeout: el prompt tardó más de {effective_timeout}s.",
                 returncode=-1,
                 timed_out=True,
             )

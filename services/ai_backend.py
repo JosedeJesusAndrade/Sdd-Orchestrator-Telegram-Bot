@@ -33,8 +33,15 @@ class AIBackend(Protocol):
         session_id: str | None,
         agent: str | None = None,
         workdir: str | None = None,
+        source_label: str = "",
+        timeout: int | None = None,
     ) -> AIBackendResult:
-        """Execute a prompt and return the result."""
+        """Execute a prompt and return the result.
+
+        Args:
+            timeout: Per-call timeout in seconds. ``None`` means "use the
+                backend's configured default" (e.g. the constructor timeout).
+        """
         ...
     
     def cancel(self) -> None:

@@ -24,6 +24,7 @@ from config import OPENAI_API_KEY, CONTAINER_KEY
 from utils.logging import get_module_logger, log_exception, mask_chat_id
 from handlers import authorized
 from services.prompt_service import PromptAlreadyRunningError
+from services.telegram_chat_view import TelegramChatView
 from services.container import AppContainer
 
 logger = get_module_logger(__name__)
@@ -151,9 +152,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Delegate to PromptService via container
         await container.prompt_service.execute(
-            chat_id=chat_id,
+            conversation_id=chat_id,
             prompt_text=text,
-            update_for_logging=update,
+            view=TelegramChatView(container.message_sender, chat_id),
         )
 
     except PromptAlreadyRunningError:
@@ -213,9 +214,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         await container.prompt_service.execute(
-            chat_id=chat_id,
+            conversation_id=chat_id,
             prompt_text=prompt,
-            update_for_logging=update,
+            view=TelegramChatView(container.message_sender, chat_id),
         )
     except PromptAlreadyRunningError:
         await update.message.reply_text(

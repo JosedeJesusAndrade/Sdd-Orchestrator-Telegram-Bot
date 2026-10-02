@@ -326,7 +326,6 @@ async def run_bot() -> None:
     message_sender = MessageSender(bot_port)
     prompt_service = PromptService(
         session_store=session_store,
-        message_sender=message_sender,
         provider_factory=provider_factory,
     )
 

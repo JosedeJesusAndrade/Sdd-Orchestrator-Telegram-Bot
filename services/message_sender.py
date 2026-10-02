@@ -120,6 +120,15 @@ class MessageSender:
     ) -> MessageInfo | None:
         """Try MarkdownV2, fall back to stripped plain text.
 
+        This is the CANONICAL owner of the formatting fallback (F4): the
+        transport (``BotPort``/``TelegramAdapter``) is now a pure passthrough
+        that raises on failure, so this method is the single place that
+        implements "try formatted, then plain". It drives the transport for
+        BOTH attempts and owns both logical events:
+
+          - ``mdv2_first_attempt_failed`` (DEBUG) — the formatted send failed
+          - ``mdv2_fallback_error`` (ERROR) — the plain retry also failed
+
         Telegram's MarkdownV2 parser is strict — a single unescaped character
         in the wrong place rejects the entire message. Rather than trying to
         perfectly escape everything (impossible with AI-generated output),

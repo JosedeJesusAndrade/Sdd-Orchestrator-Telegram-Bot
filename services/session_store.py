@@ -25,9 +25,13 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from config import DEFAULT_MODEL, DEFAULT_SESSION_NAME
 from utils.logging import get_module_logger, mask_chat_id
+
+if TYPE_CHECKING:
+    from services.chat_view import ConversationId
 
 logger = get_module_logger(__name__)
 
@@ -127,10 +131,10 @@ class SessionStore:
 
     # ── Public API: session CRUD ───────────────────────────────────
 
-    async def get_active_session(self, chat_id: int) -> SessionInfo | None:
+    async def get_active_session(self, conversation_id: ConversationId) -> SessionInfo | None:
         """Return the currently active session for a chat, or None."""
         data = await self._load()
-        chat_data = data.get(str(chat_id), {})
+        chat_data = data.get(str(conversation_id), {})
         active_name = chat_data.get("active")
         if not active_name:
             return None
@@ -148,14 +152,14 @@ class SessionStore:
             is_active=True,
         )
 
-    async def create_session(self, chat_id: int, name: str) -> SessionInfo:
+    async def create_session(self, conversation_id: ConversationId, name: str) -> SessionInfo:
         """Create a new named session and set it as active.
 
         Raises:
             SessionExistsError: if a session with this name already exists.
         """
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         chat_data = data.setdefault(cid, {})
         sessions = chat_data.setdefault("sessions", {})
 
@@ -178,7 +182,7 @@ class SessionStore:
             extra={
                 "event": "session_created",
                 "session_name": name,
-                "chat_id_masked": mask_chat_id(chat_id),
+                "chat_id_masked": mask_chat_id(conversation_id),
             },
         )
         return SessionInfo(
@@ -186,14 +190,14 @@ class SessionStore:
             created=now, last_used=None, prompt_count=0, is_active=True,
         )
 
-    async def switch_session(self, chat_id: int, name: str) -> SessionInfo:
+    async def switch_session(self, conversation_id: ConversationId, name: str) -> SessionInfo:
         """Switch the active session to another existing one.
 
         Raises:
             SessionNotFoundError: if the named session does not exist.
         """
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         sessions = data.get(cid, {}).get("sessions", {})
 
         if name not in sessions:
@@ -208,7 +212,7 @@ class SessionStore:
             extra={
                 "event": "session_switched",
                 "session_name": name,
-                "chat_id_masked": mask_chat_id(chat_id),
+                "chat_id_masked": mask_chat_id(conversation_id),
             },
         )
         return SessionInfo(
@@ -217,7 +221,7 @@ class SessionStore:
             prompt_count=s.get("prompt_count", 0), is_active=True,
         )
 
-    async def delete_session(self, chat_id: int, name: str) -> str | None:
+    async def delete_session(self, conversation_id: ConversationId, name: str) -> str | None:
         """Delete a session. Returns the real OpenCode session ID if it had one.
 
         If the deleted session was active, auto-switches to the next available.
@@ -227,7 +231,7 @@ class SessionStore:
             SessionNotFoundError: if the session does not exist.
         """
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         sessions = data.get(cid, {}).get("sessions", {})
 
         if name not in sessions:
@@ -258,15 +262,15 @@ class SessionStore:
             extra={
                 "event": "session_deleted",
                 "session_name": name,
-                "chat_id_masked": mask_chat_id(chat_id),
+                "chat_id_masked": mask_chat_id(conversation_id),
             },
         )
         return real_id
 
-    async def list_sessions(self, chat_id: int) -> list[SessionInfo]:
+    async def list_sessions(self, conversation_id: ConversationId) -> list[SessionInfo]:
         """Return all sessions for a chat, with the active one flagged."""
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         chat_data = data.get(cid, {})
         active_name = chat_data.get("active")
         sessions = chat_data.get("sessions", {})
@@ -286,31 +290,31 @@ class SessionStore:
 
     # ── Public API: model preference ───────────────────────────────
 
-    async def get_model(self, chat_id: int) -> str:
+    async def get_model(self, conversation_id: ConversationId) -> str:
         """Return the model preference for a chat, falling back to DEFAULT_MODEL."""
         data = await self._load()
-        return data.get(str(chat_id), {}).get("model", DEFAULT_MODEL)
+        return data.get(str(conversation_id), {}).get("model", DEFAULT_MODEL)
 
-    async def set_model(self, chat_id: int, model: str) -> None:
+    async def set_model(self, conversation_id: ConversationId, model: str) -> None:
         """Persist a model preference for a chat."""
         data = await self._load()
-        data.setdefault(str(chat_id), {})["model"] = model
+        data.setdefault(str(conversation_id), {})["model"] = model
         await self._save(data)
         logger.info(
             "Model changed",
             extra={
                 "event": "model_changed",
                 "model": model,
-                "chat_id_masked": mask_chat_id(chat_id),
+                "chat_id_masked": mask_chat_id(conversation_id),
             },
         )
 
     # ── Public API: prompt tracking ────────────────────────────────
 
-    async def increment_prompt_count(self, chat_id: int) -> int:
+    async def increment_prompt_count(self, conversation_id: ConversationId) -> int:
         """Increment prompt count for the active session. Returns new count."""
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         active_name = data.get(cid, {}).get("active", DEFAULT_SESSION_NAME)
         session = (
             data.setdefault(cid, {})
@@ -322,51 +326,51 @@ class SessionStore:
         await self._save(data)
         return session["prompt_count"]
 
-    async def update_session_id(self, chat_id: int, real_id: str) -> None:
+    async def update_session_id(self, conversation_id: ConversationId, real_id: str) -> None:
         """Update the real OpenCode session ID for the active session."""
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         active_name = data.get(cid, {}).get("active", DEFAULT_SESSION_NAME)
         sessions = data.setdefault(cid, {}).setdefault("sessions", {})
         if active_name in sessions:
             sessions[active_name]["id"] = real_id
         await self._save(data)
 
-    async def update_session_title(self, chat_id: int, name: str, title: str) -> None:
+    async def update_session_title(self, conversation_id: ConversationId, name: str, title: str) -> None:
         """Update the title of a named session."""
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         sessions = data.get(cid, {}).get("sessions", {})
         if name in sessions:
             sessions[name]["title"] = title
         await self._save(data)
 
-    async def get_chat_setting(self, chat_id: int, key: str, default: object = None) -> object:
+    async def get_chat_setting(self, conversation_id: ConversationId, key: str, default: object = None) -> object:
         data = await self._load()
-        chat_data = data.get(str(chat_id), {})
+        chat_data = data.get(str(conversation_id), {})
         settings = chat_data.get("settings", {})
         return settings.get(key, default)
 
-    async def set_chat_setting(self, chat_id: int, key: str, value: object) -> None:
+    async def set_chat_setting(self, conversation_id: ConversationId, key: str, value: object) -> None:
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         chat_data = data.setdefault(cid, {})
         settings = chat_data.setdefault("settings", {})
         settings[key] = value
         await self._save(data)
 
-    async def get_all_chat_settings(self, chat_id: int) -> dict:
+    async def get_all_chat_settings(self, conversation_id: ConversationId) -> dict:
         data = await self._load()
-        return data.get(str(chat_id), {}).get("settings", {})
+        return data.get(str(conversation_id), {}).get("settings", {})
 
-    async def reset_session(self, chat_id: int) -> None:
+    async def reset_session(self, conversation_id: ConversationId) -> None:
         """Reset the active session's OpenCode ID and prompt count.
 
         Used by /new — clears the real session ID so the next prompt
         starts fresh, but preserves the session name and model.
         """
         data = await self._load()
-        cid = str(chat_id)
+        cid = str(conversation_id)
         chat_data = data.get(cid, {})
         active_name = chat_data.get("active", DEFAULT_SESSION_NAME)
         sessions = chat_data.get("sessions", {})
@@ -379,6 +383,6 @@ class SessionStore:
                 extra={
                     "event": "session_reset",
                     "session_name": active_name,
-                    "chat_id_masked": mask_chat_id(chat_id),
+                    "chat_id_masked": mask_chat_id(conversation_id),
                 },
             )

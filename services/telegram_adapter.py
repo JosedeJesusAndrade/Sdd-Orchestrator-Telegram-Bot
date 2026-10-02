@@ -6,9 +6,7 @@ from __future__ import annotations
 import logging
 from telegram import Bot
 from services.bot_port import MessageInfo
-from utils.logging import get_module_logger, log_exception
-
-logger = get_module_logger(__name__)
+from utils.logging import log_exception
 
 
 class TelegramAdapter:
@@ -20,32 +18,18 @@ class TelegramAdapter:
     async def send_message(
         self, chat_id: int, text: str, parse_mode: str | None = None,
     ) -> MessageInfo:
-        try:
-            msg = await self._bot.send_message(
-                chat_id=chat_id, text=text, parse_mode=parse_mode,
-            )
-            return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=msg.text or text)
-        except Exception:
-            log_exception(
-                "mdv2_first_attempt_failed",
-                module=__name__,
-                level=logging.DEBUG,
-            )
-            clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
-            try:
-                msg = await self._bot.send_message(chat_id=chat_id, text=clean)
-                return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=clean)
-            except Exception as e:
-                logger.error(
-                    "send_message fallback failed",
-                    extra={
-                        "event": "send_message_fallback_error",
-                        "chat_id": chat_id,
-                        "error_type": type(e).__name__,
-                    },
-                    exc_info=True,
-                )
-                raise
+        """Pure transport passthrough — one Telegram call, no formatting policy.
+
+        The transport sends EXACTLY the bytes it is given. Any failure
+        propagates as an exception; it is NOT silently retried with a
+        different parse mode. The MarkdownV2→plain fallback is owned by
+        ``MessageSender`` (the formatting layer), which calls this method
+        for both the formatted and the plain attempt.
+        """
+        msg = await self._bot.send_message(
+            chat_id=chat_id, text=text, parse_mode=parse_mode,
+        )
+        return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=msg.text or text)
     
     async def edit_message_text(
         self, chat_id: int, message_id: int, text: str,

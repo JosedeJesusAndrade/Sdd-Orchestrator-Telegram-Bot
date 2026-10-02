@@ -1,7 +1,7 @@
 {
   "8664220427": {
     "active": "default",
-    "model": "deepseek/deepseek-v4-pro",
+    "model": "deepseek/deepseek-flash",
     "sessions": {
       "default": {
         "id": null,
@@ -12,7 +12,7 @@
       }
     },
     "settings": {
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek/deepseek-flash",
       "timeout": 300,
       "workdir": "C:\\Users\\marie\\Desktop\\mono\\python",
       "provider": "opencode"

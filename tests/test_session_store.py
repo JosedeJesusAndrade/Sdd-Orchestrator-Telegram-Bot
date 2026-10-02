@@ -17,7 +17,7 @@ def tmp_store():
 def test_get_model_default(tmp_store):
     """get_model returns DEFAULT_MODEL for unknown chat."""
     model = asyncio.run(tmp_store.get_model(12345))
-    assert model == "deepseek/deepseek-v4-pro"
+    assert model == "deepseek/deepseek-flash"
 
 
 def test_set_and_get_model(tmp_store):

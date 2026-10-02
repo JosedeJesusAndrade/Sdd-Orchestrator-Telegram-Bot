@@ -176,7 +176,7 @@ OPENCODE_CMD = os.getenv("OPENCODE_CMD") or resolve_opencode_cmd()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # ─── Models ───
-DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
+DEFAULT_MODEL = "deepseek/deepseek-flash"
 MODEL_ALIASES = {
     "deepseek": {
         "pro": "deepseek/deepseek-v4-pro",

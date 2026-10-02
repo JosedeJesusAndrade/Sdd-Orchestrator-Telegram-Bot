@@ -44,7 +44,9 @@ from services.ai_provider_factory import AIProviderFactory
 from services.container import AppContainer
 from utils.logging import get_module_logger, log_exception
 
-logger = get_module_logger(__name__)
+# Literal "bot" (not __name__): this module runs as "__main__", which would
+# produce the unhelpful logger name "opencode_bot.__main__".
+logger = get_module_logger("bot")
 
 from handlers.messages import handle_message, handle_voice
 from handlers.commands import (
@@ -232,7 +234,7 @@ async def _connectivity_monitor(app: Application, stop_event: asyncio.Event) -> 
         except Exception as e:
             log_exception(
                 "connectivity_check_error",
-                module=__name__,
+                module="bot",
                 level=logging.DEBUG,
                 error_type=type(e).__name__,
             )

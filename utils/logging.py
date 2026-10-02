@@ -1,10 +1,13 @@
-"""Logging utilities: chat ID masking, request_id context, key=value formatter.
+"""Logging utilities: chat ID masking, request_id context, formatters.
 
 This module is the SINGLE SOURCE OF TRUTH for:
   - `request_id` context propagation (via contextvars — asyncio-safe)
   - `RequestIdFilter` (injects request_id into every log record)
   - `mask_chat_id` (privacy: first-2/last-2 visible digits)
+  - `_extract_structured_fields` (shared extras extraction + masking rule)
   - `KeyValueFormatter` (formats log records as `event=NAME key=value "message"`)
+  - `JsonFormatter` (same structured data, one JSON object per line)
+  - `make_formatter` (selects text vs JSON from the BOT_LOG_FORMAT flag)
   - `get_module_logger()` (namespaces module loggers under `opencode_bot` so
     records propagate to the handlers attached by `config.setup_logger()`)
 
@@ -26,6 +29,7 @@ Why a namespaced logger hierarchy?
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import uuid
 
@@ -157,6 +161,48 @@ _STANDARD_RECORD_FIELDS = frozenset({
 })
 
 
+def _extract_structured_fields(record: logging.LogRecord) -> dict[str, object]:
+    """Return the ordered user extras from `record`, applying the privacy rule.
+
+    This is the SINGLE extraction implementation shared by BOTH formatters
+    (text and JSON). Keeping it in one place guarantees the JSON output
+    inherits the exact same security contract — a re-implementation could
+    drift and leak a raw `chat_id`.
+
+    Iteration order: Python's object.__dict__ preserves insertion order
+    (CPython 3.7+ guarantee). Since Logger.makeRecord sets extras via
+    setattr() in iteration order of the extras dict, the order in the output
+    matches the order of the extras dict passed to logger.*().
+
+    Skips `_STANDARD_RECORD_FIELDS` (stdlib LogRecord attributes) and any
+    key starting with "_" (private/internal attributes).
+
+    Privacy contract: `chat_id` is ALWAYS emitted as `chat_id_masked`,
+    regardless of its type (int or str). If the caller passes both
+    `chat_id` and `chat_id_masked`, the raw `chat_id` is dropped (the
+    formatter's auto-mask is authoritative) to prevent raw IDs leaking
+    into the log sink.
+    """
+    fields: dict[str, object] = {}
+    for key in record.__dict__:
+        if key in _STANDARD_RECORD_FIELDS:
+            continue
+        if key.startswith("_"):
+            continue
+        value = record.__dict__[key]
+
+        if key == "chat_id":
+            # Security: never emit raw chat_id, even if the caller also
+            # passed a pre-masked value. The formatter's auto-mask wins.
+            if "chat_id_masked" in record.__dict__:
+                continue
+            key = "chat_id_masked"
+            value = mask_chat_id(value if isinstance(value, (int, str)) else str(value))
+
+        fields[key] = value
+    return fields
+
+
 class KeyValueFormatter(logging.Formatter):
     """Format log records as `key=value key=value "message"`.
 
@@ -209,40 +255,39 @@ class KeyValueFormatter(logging.Formatter):
             record.message = f'"{user_message}"'
 
         # Step 4: delegate to formatMessage (template substitution)
-        return self.formatMessage(record)
+        s = self.formatMessage(record)
+
+        # Step 5: replicate the stdlib exception/stack tail. We cannot call
+        # super().format(record): it would reset record.message to the bare
+        # message, wiping the key=value enrichment built above. stdlib
+        # Formatter.format() appends record.exc_text / stack_info AFTER the
+        # template — this mirrors that behavior verbatim, so the traceback of
+        # every log_exception(..., exc_info=True) record actually reaches the
+        # sink.
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+        if record.exc_text:
+            if s and not s.endswith("\n"):
+                s += "\n"
+            s += record.exc_text
+        if record.stack_info:
+            if s and not s.endswith("\n"):
+                s += "\n"
+            s += self.formatStack(record.stack_info)
+        return s
 
     def _format_extras(self, record: logging.LogRecord) -> str:
-        """Return 'key=value key=value ...' from record's non-standard fields.
+        """Return 'key=value key=value ...' from the shared structured fields.
 
-        Iteration order: Python's object.__dict__ preserves insertion order
-        (CPython 3.7+ guarantee). Since Logger.makeRecord sets extras via
-        setattr() in iteration order of the extras dict, the order in the
-        log output matches the order of the extras dict passed to logger.*().
-
-        Privacy contract: `chat_id` is ALWAYS emitted as `chat_id_masked`,
-        regardless of its type (int or str). If the caller passes both
-        `chat_id` and `chat_id_masked`, the raw `chat_id` is dropped (the
-        formatter's auto-mask is authoritative) to prevent raw IDs leaking
-        into the log sink.
+        Thin join over `_extract_structured_fields` (the single source of
+        truth for extraction + the chat_id masking contract, shared with
+        JsonFormatter).
         """
-        parts: list[str] = []
-        for key in record.__dict__:
-            if key in _STANDARD_RECORD_FIELDS:
-                continue
-            if key.startswith("_"):
-                continue
-            value = record.__dict__[key]
-
-            if key == "chat_id":
-                # Security: never emit raw chat_id, even if the caller also
-                # passed a pre-masked value. The formatter's auto-mask wins.
-                if "chat_id_masked" in record.__dict__:
-                    continue
-                key = "chat_id_masked"
-                value = mask_chat_id(value if isinstance(value, (int, str)) else str(value))
-
-            parts.append(f"{key}={_format_value(value)}")
-        return " ".join(parts)
+        return " ".join(
+            f"{key}={_format_value(value)}"
+            for key, value in _extract_structured_fields(record).items()
+        )
 
 
 def _format_value(value: object) -> str:
@@ -264,3 +309,76 @@ def _format_value(value: object) -> str:
             return f'"{value}"'
         return value
     return f"'{value!r}'"
+
+
+# ── JsonFormatter (roadmap item 6) ────────────────────────────────────────
+
+class JsonFormatter(logging.Formatter):
+    """Render a LogRecord as one JSON line.
+
+    Sibling of KeyValueFormatter: same data model (extra={} fields), different
+    representation (DTO per use case). Selected by BOT_LOG_FORMAT=json.
+
+    Payload order (stable — easy to eyeball and jq):
+        ts, level, logger, req, event, <extras...>, msg [, exc]
+
+    - `_extract_structured_fields` supplies the extras, so the
+      `chat_id -> chat_id_masked` security rule is identical to text mode
+      (one implementation, no drift).
+    - `exc` is included ONLY when `record.exc_info` is set.
+    - NO pretty-print: one record = one physical line (JSON Lines); the
+      traceback's newlines are escaped by json.dumps.
+    - `ensure_ascii=False` so Spanish accents render correctly under the
+      utf-8 handlers.
+    - `default=str` stringifies datetimes/Exceptions/objects; circular
+      containers bypass it and raise, hence the degraded re-dump below.
+
+    Timestamp precision: seconds, same as text mode. The prompt preferred
+    milliseconds, but `logging.Formatter.formatTime` delegates to
+    `time.strftime`, which does NOT portably support `%f`; adding them would
+    require a custom formatTime override. Second precision keeps both formats
+    correlatable (design D3 explicitly chose the same precision as text).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(datefmt="%Y-%m-%dT%H:%M:%S")
+
+    def format(self, record: logging.LogRecord) -> str:
+        fields = _extract_structured_fields(record)
+        event = fields.pop("event", None)
+
+        payload: dict[str, object] = {
+            "ts": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "req": getattr(record, "request_id", "-"),
+        }
+        if event is not None:
+            payload["event"] = event
+        payload.update(fields)
+        payload["msg"] = record.getMessage()
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+
+        try:
+            return json.dumps(payload, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            # `default=str` covers objects/datetimes/exceptions, but circular
+            # containers bypass it and raise. A log line must NEVER be lost to
+            # serialization: degrade every value to repr() and retry — ugly
+            # output beats a missing log.
+            degraded = {key: repr(value) for key, value in payload.items()}
+            return json.dumps(degraded, ensure_ascii=False)
+
+
+def make_formatter(
+    format_name: str, template: str, *, datefmt: str | None = None
+) -> logging.Formatter:
+    """Return the formatter for 'text' (default) or 'json'.
+
+    Unknown values fall back to text, matching the forgiving
+    `BOT_LOG_FORMAT` contract in config.py (a typo must never crash the bot).
+    """
+    if format_name == "json":
+        return JsonFormatter()
+    return KeyValueFormatter(template, datefmt=datefmt)

@@ -1,5 +1,11 @@
-"""Tests for KeyValueFormatter output shape and security (chat_id masking)."""
+"""Tests for KeyValueFormatter output shape and security (chat_id masking).
+
+Also covers the traceback-rendering fix: format() replicates the stdlib
+exc_text/stack_info tail so log_exception(..., exc_info=True) records actually
+carry their traceback into the sink.
+"""
 import logging
+import sys
 
 from utils.logging import KeyValueFormatter
 
@@ -51,6 +57,57 @@ def test_string_chat_id_is_also_masked() -> None:
     out = _capture(fmt, logging.INFO, "msg", event="x", chat_id="8664220427")
     assert "8664220427" not in out, f"raw string chat_id leaked: {out}"
     assert "chat_id_masked=" in out
+
+
+def _exception_record(msg: str = "boom", **extra) -> logging.LogRecord:
+    """Build an ERROR record carrying a real exc_info tuple."""
+    record = logging.LogRecord(
+        name="test", level=logging.ERROR, pathname=__file__, lineno=0,
+        msg=msg, args=(), exc_info=None,
+    )
+    for k, v in extra.items():
+        setattr(record, k, v)
+    try:
+        raise ValueError("explota")
+    except ValueError:
+        record.exc_info = sys.exc_info()
+    return record
+
+
+def test_traceback_is_rendered_when_exc_info_present() -> None:
+    fmt = KeyValueFormatter("%(levelname)s %(name)s: %(message)s")
+    out = fmt.format(_exception_record("boom", event="probe_boom"))
+    assert "Traceback" in out, f"traceback missing from output: {out!r}"
+    assert "ValueError" in out, f"exception name missing from output: {out!r}"
+    assert "explota" in out, f"exception message missing from output: {out!r}"
+
+
+def test_traceback_fix_keeps_key_value_enrichment() -> None:
+    """No regression: extras + quoted message survive the exc tail fix."""
+    fmt = KeyValueFormatter("%(levelname)s %(name)s: %(message)s")
+    out = fmt.format(_exception_record("boom", event="probe_boom", k="v"))
+    assert 'event=probe_boom k=v "boom"' in out, f"enrichment lost: {out!r}"
+    assert "Traceback" in out
+    assert out.index('event=probe_boom') < out.index("Traceback"), (
+        "the key=value line must precede the traceback tail"
+    )
+
+
+def test_no_traceback_when_exc_info_absent() -> None:
+    fmt = KeyValueFormatter("%(levelname)s %(name)s: %(message)s")
+    out = _capture(fmt, logging.ERROR, "boom", event="probe_boom")
+    assert "Traceback" not in out
+
+
+def test_stack_info_tail_is_rendered() -> None:
+    fmt = KeyValueFormatter("%(levelname)s %(name)s: %(message)s")
+    record = logging.LogRecord(
+        name="test", level=logging.INFO, pathname=__file__, lineno=0,
+        msg="stacked", args=(), exc_info=None,
+    )
+    record.stack_info = "Stack (most recent call last):\n  probe"
+    out = fmt.format(record)
+    assert "Stack (most recent call last):" in out
 
 
 def test_multi_handler_no_duplication() -> None:

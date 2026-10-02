@@ -38,6 +38,13 @@ START_TIME = None  # set at startup
 # records regardless of this value (the #358 gotcha).
 SWALLOWED_LOG_LEVEL = logging.DEBUG
 
+# Output format for ALL handlers: "text" (key=value, default) or "json".
+# Text is for humans (grep-friendly); JSON is for machines (jq / future
+# Loki-Sentry shipping). Unknown values fall back to text.
+# Normalized (strip + lower) so " JSON " from a .env file still works; the
+# fallback path is only for real typos.
+LOG_FORMAT = os.getenv("BOT_LOG_FORMAT", "text").strip().lower()
+
 
 def setup_logger() -> logging.Logger:
     """Configure rotating file + console logger with structured key=value format.
@@ -48,20 +55,27 @@ def setup_logger() -> logging.Logger:
       - File: includes [req=...] for correlation and full logger name for
         forensic search via `grep event=session_created bot.log`.
 
-    Both handlers use KeyValueFormatter to render extra={} fields as
-    `key=value` pairs before the message. See utils/logging.py for details.
+    Formatters are chosen by LOG_FORMAT (BOT_LOG_FORMAT): text renders
+    extra={} fields as `key=value` pairs before the message; json emits one
+    JSON object per line. Templates are only used in text mode. See
+    utils/logging.py for details.
     """
     logger = logging.getLogger("opencode_bot")
     logger.setLevel(logging.INFO)
 
     # Import from utils here to avoid circular import (config is loaded
     # very early, before utils may be fully initialized).
-    from utils.logging import KeyValueFormatter, RequestIdFilter
+    from utils.logging import RequestIdFilter, make_formatter
+
+    # Forgiving resolution: a typo must never crash the bot (falls back to
+    # text); the warning below records that it happened.
+    fmt = LOG_FORMAT if LOG_FORMAT in ("text", "json") else "text"
 
     # ── Console handler (no request_id — too noisy for interactive use) ──
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG)
-    console_fmt = KeyValueFormatter(
+    console_fmt = make_formatter(
+        fmt,
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -74,7 +88,8 @@ def setup_logger() -> logging.Logger:
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.addFilter(RequestIdFilter())
-    file_fmt = KeyValueFormatter(
+    file_fmt = make_formatter(
+        fmt,
         "%(asctime)s [%(levelname)s] [req=%(request_id)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -84,6 +99,15 @@ def setup_logger() -> logging.Logger:
     # One-knob switch for swallowed-exception logging (see SWALLOWED_LOG_LEVEL).
     # Children (`opencode_bot.swallowed.<module>`) inherit this level.
     logging.getLogger("opencode_bot.swallowed").setLevel(SWALLOWED_LOG_LEVEL)
+
+    # Emitted AFTER attaching handlers on purpose: before that, the record
+    # would only reach logging.lastResort (stderr) and never bot.log.
+    if fmt != LOG_FORMAT:
+        logger.warning(
+            "BOT_LOG_FORMAT inválido: %r. Se usará 'text'.",
+            LOG_FORMAT,
+            extra={"event": "log_format_fallback", "bogus_format": LOG_FORMAT},
+        )
 
     return logger
 

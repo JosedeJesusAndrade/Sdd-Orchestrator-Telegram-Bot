@@ -180,9 +180,9 @@ DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
 MODEL_ALIASES = {
     "deepseek": {
         "pro": "deepseek/deepseek-v4-pro",
-        "flash": "deepseek/deepseek-v4-flash",
+        "flash": "deepseek/deepseek-flash",
         "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
-        "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+        "deepseek-flash": "deepseek/deepseek-flash",
     },
     "minimax": {
         "m3": "minimax/MiniMax-M3",

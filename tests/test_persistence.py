@@ -34,7 +34,7 @@ class TestSessionPersistence:
             sessions_mod.SESSION_DB = original
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
-        test_data = {"456": {"active": "test", "model": "deepseek/deepseek-v4-flash"}}
+        test_data = {"456": {"active": "test", "model": "deepseek/deepseek-flash"}}
         test_file = tmp_path / "sessions.json"
 
         import persistence.sessions as sessions_mod

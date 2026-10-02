@@ -20,7 +20,9 @@ load_dotenv(ENV_PATH)
 # deferred `from utils.logging import ...` in setup_logger() is stdlib-only
 # (no circular import).
 LOG_DIR = Path(__file__).resolve().parent
-LOG_FILE = LOG_DIR / "bot.log"
+# Env override (BOT_LOG_FILE) lets tests/ETC redirect the log elsewhere;
+# the default stays the production bot.log.
+LOG_FILE = Path(os.getenv("BOT_LOG_FILE", LOG_DIR / "bot.log"))
 START_TIME = None  # set at startup
 
 # Swallowed-exception logging verbosity — THE one knob controlling every

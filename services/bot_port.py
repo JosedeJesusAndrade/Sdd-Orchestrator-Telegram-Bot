@@ -5,7 +5,7 @@ Decouples business logic from the Telegram library.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass
@@ -41,5 +41,5 @@ class BotPort(Protocol):
     async def delete_message(self, chat_id: int, message_id: int) -> bool:
         ...
     
-    async def get_me(self) -> dict:
+    async def get_me(self) -> dict[str, Any]:
         ...

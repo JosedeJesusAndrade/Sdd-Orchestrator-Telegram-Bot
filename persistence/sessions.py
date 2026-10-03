@@ -9,8 +9,9 @@ import time
 import asyncio
 import subprocess
 from pathlib import Path
+from typing import Any
 
-from config import SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT
+from config import SESSION_DB as SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
@@ -19,12 +20,12 @@ logger = get_module_logger(__name__)
 session_lock = asyncio.Lock()
 
 # Module-level cache for sessions.json to reduce filesystem I/O (P3)
-_session_map_cache: dict | None = None
+_session_map_cache: dict[str, Any] | None = None
 _session_map_cache_time: float = 0
 SESSION_MAP_CACHE_TTL = 2.0  # seconds
 
 # P4: TTL cache for fetch_opencode_sessions() to avoid redundant subprocess calls
-_opencode_sessions_cache: list[dict] | None = None
+_opencode_sessions_cache: list[dict[str, Any]] | None = None
 _opencode_sessions_cache_time: float = 0
 SESSION_LIST_CACHE_TTL = 10.0  # seconds
 
@@ -60,11 +61,12 @@ def _backup_corrupt_session_db() -> None:
         )
 
 
-def load_session_map() -> dict:
+def load_session_map() -> dict[str, Any]:
     """Load {chat_id: {active, sessions: {name: {id, title, created, last_used, prompt_count}}}}"""
     if SESSION_DB.exists():
         try:
-            return json.loads(SESSION_DB.read_text(encoding="utf-8"))
+            data: dict[str, Any] = json.loads(SESSION_DB.read_text(encoding="utf-8"))
+            return data
         except Exception:
             # Corrupt/unreadable store: falling back to {} hides data loss, so
             # leave an ERROR trail with the path and preserve the original file.
@@ -79,12 +81,12 @@ def load_session_map() -> dict:
     return {}
 
 
-async def save_session_map_atomic(data: dict) -> None:
+async def save_session_map_atomic(data: dict[str, Any]) -> None:
     """Thread-safe, crash-safe save of session map. Invalidates cache."""
     global _session_map_cache, _session_map_cache_time
     loop = asyncio.get_running_loop()
     async with session_lock:
-        def _write():
+        def _write() -> None:
             SESSION_DB.parent.mkdir(parents=True, exist_ok=True)
             tmp = SESSION_DB.with_suffix('.tmp')
             try:
@@ -99,7 +101,7 @@ async def save_session_map_atomic(data: dict) -> None:
         _session_map_cache_time = time.time()
 
 
-async def load_session_map_safe() -> dict:
+async def load_session_map_safe() -> dict[str, Any]:
     """Load session map with lock protection and TTL cache."""
     global _session_map_cache, _session_map_cache_time
     now = time.time()
@@ -112,7 +114,7 @@ async def load_session_map_safe() -> dict:
         return _session_map_cache.copy()
 
 
-def parse_opencode_session_list(output: str) -> list[dict]:
+def parse_opencode_session_list(output: str) -> list[dict[str, Any]]:
     """Parse 'opencode session list' output into list of {id, title, updated}."""
     sessions = []
     for line in output.strip().split('\n'):
@@ -137,7 +139,7 @@ def parse_opencode_session_list(output: str) -> list[dict]:
     return sessions
 
 
-async def fetch_opencode_sessions() -> list[dict]:
+async def fetch_opencode_sessions() -> list[dict[str, Any]]:
     """Run 'opencode session list' and parse output. Cached with TTL (P4)."""
     global _opencode_sessions_cache, _opencode_sessions_cache_time
     now = time.time()
@@ -197,23 +199,26 @@ async def fetch_opencode_sessions() -> list[dict]:
 # --- Public API ---
 
 
-async def get_chat_sessions(chat_id: int) -> dict:
+async def get_chat_sessions(chat_id: int) -> dict[str, Any]:
     """Get session data for a chat. Returns {active, sessions: {name: {...}}}."""
     smap = await load_session_map_safe()
-    return smap.get(str(chat_id), {})
+    result: dict[str, Any] = smap.get(str(chat_id), {})
+    return result
 
 
 async def get_active_session_id(chat_id: int) -> str | None:
     """Get the real OpenCode session ID for the active session of a chat."""
     data = await get_chat_sessions(chat_id)
     active_name = data.get("active", DEFAULT_SESSION_NAME)
-    return data.get("sessions", {}).get(active_name, {}).get("id")
+    real_id: str | None = data.get("sessions", {}).get(active_name, {}).get("id")
+    return real_id
 
 
 async def get_model(chat_id: int, default: str) -> str:
     """Get the model preference for a chat."""
     data = await get_chat_sessions(chat_id)
-    return data.get("model", default)
+    model: str = data.get("model", default)
+    return model
 
 
 async def set_model(chat_id: int, model: str) -> None:
@@ -223,7 +228,7 @@ async def set_model(chat_id: int, model: str) -> None:
     await save_session_map_atomic(smap)
 
 
-async def update_session(chat_id: int, session_name: str, **fields) -> None:
+async def update_session(chat_id: int, session_name: str, **fields: Any) -> None:
     """Update fields of a named session."""
     smap = await load_session_map_safe()
     sessions = smap.setdefault(str(chat_id), {}).setdefault("sessions", {})
@@ -232,7 +237,7 @@ async def update_session(chat_id: int, session_name: str, **fields) -> None:
     await save_session_map_atomic(smap)
 
 
-async def add_session(chat_id: int, session_name: str, real_id: str = None, title: str = "") -> None:
+async def add_session(chat_id: int, session_name: str, real_id: str | None = None, title: str = "") -> None:
     """Add a new named session for a chat."""
     smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
@@ -267,7 +272,7 @@ async def delete_session(chat_id: int, name: str) -> str | None:
     sessions = chat_data.get("sessions", {})
     if name not in sessions:
         return None
-    real_id = sessions[name].get("id")
+    real_id: str | None = sessions[name].get("id")
     del sessions[name]
     if chat_data.get("active") == name:
         chat_data["active"] = DEFAULT_SESSION_NAME

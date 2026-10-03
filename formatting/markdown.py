@@ -117,9 +117,9 @@ def telegramify_markdown(text: str) -> str:
     lines = text.split('\n')
     result = []
     in_table = False
-    table_lines = []
+    table_lines: list[str] = []
 
-    def flush_table():
+    def flush_table() -> None:
         nonlocal table_lines
         if table_lines:
             result.append('```')

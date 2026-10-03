@@ -11,12 +11,18 @@ Process tracking has been moved to services/prompt_service.py (PromptService).
 
 import functools
 import time
-from typing import Callable, Awaitable
+from typing import Any, Awaitable, Callable, Concatenate, Coroutine, ParamSpec, cast
+
+from telegram import Update
+from telegram.ext import ContextTypes
 
 from config import ALLOWED_CHAT_IDS
 from utils.logging import get_module_logger, mask_chat_id, new_request_id
+from handlers._guards import require_chat
 
 logger = get_module_logger(__name__)
+
+P = ParamSpec("P")
 
 
 def authorize(chat_id: int) -> bool:
@@ -25,8 +31,8 @@ def authorize(chat_id: int) -> bool:
 
 
 def authorized(
-    handler: Callable[..., Awaitable[None]]
-) -> Callable[..., Awaitable[None]]:
+    handler: Callable[Concatenate[Update, ContextTypes.DEFAULT_TYPE, P], Awaitable[None]],
+) -> Callable[Concatenate[Update, ContextTypes.DEFAULT_TYPE, P], Coroutine[Any, Any, None]]:
     """Decorator: only allow authorized chat_ids to execute the handler.
 
     Responsibilities (in order):
@@ -44,11 +50,15 @@ def authorized(
       - WARNING event=unauthorized  if chat_id not in ALLOWED_CHAT_IDS
     """
     @functools.wraps(handler)
-    async def wrapper(*args, **kwargs) -> None:
+    async def wrapper(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> None:
         # Fresh request_id for this invocation — visible in file logs as [req=...]
         new_request_id()
 
-        update = args[0] if args else kwargs.get("update")
         if update is None:
             logger.error(
                 "Update missing in authorized handler",
@@ -59,7 +69,7 @@ def authorized(
             )
             return
 
-        chat_id = update.effective_chat.id
+        chat_id = require_chat(update).id
         masked_cid = mask_chat_id(chat_id)
 
         logger.debug(
@@ -84,7 +94,7 @@ def authorized(
 
         start = time.monotonic()
         try:
-            return await handler(*args, **kwargs)
+            return await handler(update, context, *args, **kwargs)
         finally:
             elapsed_ms = round((time.monotonic() - start) * 1000, 2)
             logger.debug(
@@ -96,4 +106,11 @@ def authorized(
                     "duration_ms": elapsed_ms,
                 },
             )
-    return wrapper
+
+    # ``functools.wraps`` wraps ``wrapper`` in ``functools._Wrapped``, which
+    # mypy cannot reconcile with the Concatenate/ParamSpec return type; the
+    # callable shape is identical, so cast is type-only.
+    return cast(
+        Callable[Concatenate[Update, ContextTypes.DEFAULT_TYPE, P], Coroutine[Any, Any, None]],
+        wrapper,
+    )

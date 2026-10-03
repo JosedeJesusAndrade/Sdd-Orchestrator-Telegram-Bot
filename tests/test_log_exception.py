@@ -6,7 +6,9 @@ hierarchy is silently dropped. They also cover the one-knob silence mechanism
 and the field shape of a representative inline weak-log fix.
 """
 import logging
+from typing import Any
 
+from services.bot_port import MessageInfo
 from utils.logging import log_exception
 
 SWALLOWED = "opencode_bot.swallowed"
@@ -143,8 +145,21 @@ async def test_inline_weak_log_has_event_and_exc_info() -> None:
     from services.message_sender import MessageSender
 
     class _BoomBot:
-        async def send_message(self, **kwargs):
+        async def send_message(
+            self, chat_id: int, text: str, parse_mode: str | None = None
+        ) -> MessageInfo:
             raise RuntimeError("nope")
+
+        async def edit_message_text(
+            self, chat_id: int, message_id: int, text: str
+        ) -> MessageInfo | None:
+            raise NotImplementedError
+
+        async def delete_message(self, chat_id: int, message_id: int) -> bool:
+            raise NotImplementedError
+
+        async def get_me(self) -> dict[str, Any]:
+            raise NotImplementedError
 
     logger = logging.getLogger("opencode_bot.services.message_sender")
     probe = _Probe(level=logging.DEBUG)

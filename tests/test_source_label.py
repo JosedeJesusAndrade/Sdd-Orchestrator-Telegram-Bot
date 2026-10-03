@@ -25,7 +25,7 @@ class _CaptureExec:
     """Stand-in for asyncio.create_subprocess_exec that records argv."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple] = []
+        self.calls: list[tuple[str, ...]] = []
 
     async def __call__(self, *cmd_parts, **kwargs):
         self.calls.append(cmd_parts)

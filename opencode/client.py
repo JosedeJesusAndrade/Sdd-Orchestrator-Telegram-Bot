@@ -3,7 +3,7 @@ import asyncio
 import json
 import re
 import subprocess
-import sys
+from typing import Any
 
 from config import OPENCODE_CMD, INTERNAL_SUBPROCESS_TIMEOUT
 from utils.logging import get_module_logger
@@ -11,7 +11,7 @@ from utils.logging import get_module_logger
 logger = get_module_logger(__name__)
 
 
-async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]:
+async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> list[dict[str, Any]]:
     """Execute a SQL query against opencode.db via CLI. Returns list of dicts."""
     if allowed_pattern:
         match = re.search(r'WHERE\s+(\w+)\s*=\s*[\'"](\w+)[\'"]', sql)
@@ -60,57 +60,3 @@ async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]
         )
         return []
 
-
-def run_opencode(
-    cmd: list[str],
-    workdir: str,
-    timeout: int,
-    chat_id: int = None,
-    current_process: dict = None,
-    process_status: dict = None,
-) -> tuple[str, str, int, bool]:
-    """Run opencode with proper timeout via subprocess.Popen.
-
-    Returns (stdout: str, stderr: str, exitcode: int, timed_out: bool).
-    Stores process in current_process for /cancel support when chat_id is given.
-    """
-    if current_process is None:
-        current_process = {}
-    if process_status is None:
-        process_status = {}
-
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        cwd=workdir,
-        errors="replace",
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
-    )
-
-    if chat_id is not None:
-        current_process[chat_id] = process
-
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-        return stdout, stderr, process.returncode, False
-    except subprocess.TimeoutExpired:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                capture_output=True,
-            )
-        else:
-            process.kill()
-        process.wait()
-        return (
-            "",
-            "Timeout: el prompt tard\u00f3 m\u00e1s de {} segundos.".format(timeout),
-            -1,
-            True,
-        )
-    finally:
-        if chat_id is not None:
-            current_process.pop(chat_id, None)
-            process_status.pop(chat_id, None)

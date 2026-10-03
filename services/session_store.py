@@ -25,7 +25,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 from config import DEFAULT_MODEL, DEFAULT_SESSION_NAME
 from utils.logging import get_module_logger, mask_chat_id
@@ -62,6 +62,39 @@ class SessionNotFoundError(Exception):
     """Raised when referencing a session that does not exist."""
 
 
+# ── Structural port ────────────────────────────────────────────────────
+
+class SessionStorePort(Protocol):
+    """Minimal structural contract ``PromptService`` needs from session state.
+
+    ``SessionStore`` satisfies this; tests can supply a small in-memory
+    double without inheriting from the concrete production class.
+    """
+
+    async def get_model(self, conversation_id: ConversationId) -> str:
+        ...
+
+    async def get_active_session(
+        self, conversation_id: ConversationId
+    ) -> SessionInfo | None:
+        ...
+
+    async def get_chat_setting(
+        self, conversation_id: ConversationId, key: str, default: Any = None
+    ) -> Any:
+        ...
+
+    async def increment_prompt_count(
+        self, conversation_id: ConversationId
+    ) -> int:
+        ...
+
+    async def update_session_id(
+        self, conversation_id: ConversationId, real_id: str
+    ) -> None:
+        ...
+
+
 # ── Service ────────────────────────────────────────────────────────────
 
 class SessionStore:
@@ -81,13 +114,13 @@ class SessionStore:
         """
         self._path = persistence_path
         self._lock = asyncio.Lock()
-        self._cache: dict | None = None
+        self._cache: dict[str, Any] | None = None
         self._cache_time: float = 0.0
         self._cache_ttl: float = 2.0
 
     # ── Internal: file I/O ─────────────────────────────────────────
 
-    async def _load(self) -> dict:
+    async def _load(self) -> dict[str, Any]:
         """Load sessions.json with TTL cache and lock protection.
 
         Returns a FRESH COPY — callers can mutate safely.
@@ -112,7 +145,7 @@ class SessionStore:
             self._cache_time = asyncio.get_event_loop().time()
             return self._cache
 
-    async def _save(self, data: dict) -> None:
+    async def _save(self, data: dict[str, Any]) -> None:
         """Atomically persist session data to disk.
 
         Writes to a .tmp file first, then replaces the original.
@@ -237,7 +270,7 @@ class SessionStore:
         if name not in sessions:
             raise SessionNotFoundError(f"Session '{name}' not found")
 
-        real_id = sessions[name].get("id")
+        real_id: str | None = sessions[name].get("id")
         del sessions[name]
 
         # Auto-switch if the deleted session was active
@@ -293,7 +326,8 @@ class SessionStore:
     async def get_model(self, conversation_id: ConversationId) -> str:
         """Return the model preference for a chat, falling back to DEFAULT_MODEL."""
         data = await self._load()
-        return data.get(str(conversation_id), {}).get("model", DEFAULT_MODEL)
+        model: str = data.get(str(conversation_id), {}).get("model", DEFAULT_MODEL)
+        return model
 
     async def set_model(self, conversation_id: ConversationId, model: str) -> None:
         """Persist a model preference for a chat."""
@@ -324,7 +358,8 @@ class SessionStore:
         session["prompt_count"] = session.get("prompt_count", 0) + 1
         session["last_used"] = datetime.now(timezone.utc).isoformat()
         await self._save(data)
-        return session["prompt_count"]
+        count: int = session["prompt_count"]
+        return count
 
     async def update_session_id(self, conversation_id: ConversationId, real_id: str) -> None:
         """Update the real OpenCode session ID for the active session."""
@@ -345,7 +380,7 @@ class SessionStore:
             sessions[name]["title"] = title
         await self._save(data)
 
-    async def get_chat_setting(self, conversation_id: ConversationId, key: str, default: object = None) -> object:
+    async def get_chat_setting(self, conversation_id: ConversationId, key: str, default: Any = None) -> Any:
         data = await self._load()
         chat_data = data.get(str(conversation_id), {})
         settings = chat_data.get("settings", {})
@@ -359,9 +394,10 @@ class SessionStore:
         settings[key] = value
         await self._save(data)
 
-    async def get_all_chat_settings(self, conversation_id: ConversationId) -> dict:
+    async def get_all_chat_settings(self, conversation_id: ConversationId) -> dict[str, Any]:
         data = await self._load()
-        return data.get(str(conversation_id), {}).get("settings", {})
+        settings: dict[str, Any] = data.get(str(conversation_id), {}).get("settings", {})
+        return settings
 
     async def reset_session(self, conversation_id: ConversationId) -> None:
         """Reset the active session's OpenCode ID and prompt count.

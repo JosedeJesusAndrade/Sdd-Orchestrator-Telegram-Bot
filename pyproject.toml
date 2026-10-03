@@ -13,7 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff>=0.9.0",
-    "mypy>=1.16.0",
+    "mypy==2.3.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
 ]
@@ -49,13 +49,28 @@ skip-magic-trailing-comma = false
 
 [tool.mypy]
 strict = true
-disallow_untyped_defs = true
+explicit_package_bases = true
+mypy_path = "."
+exclude = '^(tmp/|get_chat_id\.py)'
 no_implicit_optional = true
 warn_return_any = true
 warn_unused_ignores = true
+
 [[tool.mypy.overrides]]
 module = "telegram.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "nest_asyncio.*"
+ignore_missing_imports = true
+
+# RATCHET: tests are checked but not forced to full strict yet.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+check_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

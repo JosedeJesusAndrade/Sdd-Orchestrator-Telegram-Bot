@@ -7,9 +7,10 @@ aware of ``MessageSender`` / Telegram ``message_id``.
 
 from __future__ import annotations
 
+from formatting.markdown import split_message
 from services.bot_port import MessageInfo
-from services.chat_view import ConversationId, ProgressHandle
-from services.message_sender import MessageSender
+from services.chat_view import ProgressHandle
+from services.message_sender import MessageSenderPort
 from utils.logging import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -24,8 +25,8 @@ class _TelegramProgressHandle:
 
     def __init__(
         self,
-        sender: MessageSender,
-        conversation_id: ConversationId,
+        sender: MessageSenderPort,
+        conversation_id: int,
         message: MessageInfo | None,
     ) -> None:
         self._sender = sender
@@ -59,13 +60,21 @@ class TelegramChatView:
 
     source_label = "\U0001f4f1 Telegram"  # "📱 Telegram"
 
-    def __init__(self, sender: MessageSender, conversation_id: ConversationId) -> None:
+    def __init__(self, sender: MessageSenderPort, conversation_id: int) -> None:
         self._sender = sender
         self._conversation_id = conversation_id
 
     async def send(self, text: str) -> bool:
+        """Deliver ``text``; True only if the WHOLE message was delivered.
+
+        F8: previously this returned ``bool(messages)`` — True if even ONE
+        fragment landed — so a 1/5 delivery was reported as a success and the
+        UI showed "✅ Completado." for a mostly-missing response. Now a partial
+        delivery is a failure for status purposes.
+        """
+        fragments = split_message(text)
         messages = await self._sender.send_formatted(self._conversation_id, text)
-        return bool(messages)
+        return len(messages) == len(fragments)
 
     async def start_progress(self, text: str) -> ProgressHandle:
         message = await self._sender.send_plain(self._conversation_id, text)

@@ -38,7 +38,7 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from config import (
     DEFAULT_MODEL, DEFAULT_SESSION_NAME,
@@ -48,7 +48,9 @@ from config import (
 from utils.logging import get_module_logger, log_exception
 
 if TYPE_CHECKING:
-    from services.session_store import SessionStore
+    from services.ai_backend import AIBackend
+    from services.ai_provider_factory import ProviderFactoryPort
+    from services.session_store import SessionInfo, SessionStorePort
     from services.chat_view import ChatView, ConversationId, ProgressHandle
 
 logger = get_module_logger(__name__)
@@ -76,16 +78,22 @@ class PromptService:
 
     def __init__(
         self,
-        session_store: SessionStore,
-        provider_factory: object,
+        session_store: SessionStorePort,
+        provider_factory: ProviderFactoryPort,
     ) -> None:
         self._store = session_store
         self._factory = provider_factory
 
         # Per-conversation running tasks
-        self._running: dict[ConversationId, asyncio.Task] = {}
+        self._running: dict[ConversationId, asyncio.Task[Any]] = {}
         # Per-conversation cancel flags (set by cancel() before process terminates)
         self._cancel: set[ConversationId] = set()
+        # Per-conversation backend instances (F3). One conversation = one
+        # backend = one process, so cancel(cid) can only ever touch that
+        # conversation's process. Lifetime == the running prompt: created in
+        # _execute_prompt, dropped in execute()'s finally. Bounded by the
+        # number of *concurrently running* prompts (not by total chats).
+        self._backends: dict[ConversationId, AIBackend] = {}
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -103,7 +111,11 @@ class PromptService:
         if conversation_id not in self._running:
             return False
         self._cancel.add(conversation_id)
-        for backend in self._factory._instances.values():
+        # F3: cancel ONLY this conversation's backend. The old code looped
+        # over every cached provider instance and killed whatever shared
+        # process the field pointed at — cross-killing other conversations.
+        backend = self._backends.get(conversation_id)
+        if backend is not None:
             try:
                 backend.cancel()
             except Exception as e:
@@ -194,7 +206,8 @@ class PromptService:
             # 4. Deliver response
             await self._deliver_response(conversation_id, result, handle, view, session)
 
-            return result["stdout"]
+            stdout: str = result["stdout"]
+            return stdout
 
         except Exception as exc:
             elapsed = time.monotonic() - start_time
@@ -224,6 +237,10 @@ class PromptService:
         finally:
             self._running.pop(conversation_id, None)
             self._cancel.discard(conversation_id)
+            # Release this conversation's backend so the instance count stays
+            # bounded by live executions (F3). The process is already gone by
+            # now; the object holds no state worth keeping.
+            self._backends.pop(conversation_id, None)
 
     # ── Internal: AI backend execution ──────────────────────────────
 
@@ -231,10 +248,10 @@ class PromptService:
         self,
         conversation_id: ConversationId,
         prompt: str,
-        session,
+        session: SessionInfo | None,
         model: str,
         source_label: str = "",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Execute prompt via the AI provider factory.
 
         Reads per-chat settings (provider, timeout, workdir) from
@@ -247,7 +264,12 @@ class PromptService:
         workdir = await self._store.get_chat_setting(conversation_id, "workdir", OPENCODE_WORKDIR)
         agent = await self._store.get_chat_setting(conversation_id, "agent", "sdd-orchestrator")
 
-        backend = self._factory.get(provider)
+        # F3: one backend instance per conversation. Store it BEFORE the
+        # cancel check so a cancel arriving during settings resolution targets
+        # *this* conversation's backend (and, if the process has not started
+        # yet, at worst cancels a process-less instance — a harmless no-op).
+        backend = self._factory.create(provider)
+        self._backends[conversation_id] = backend
 
         # Check if cancelled during settings resolution (before subprocess)
         if conversation_id in self._cancel:
@@ -277,10 +299,10 @@ class PromptService:
     async def _deliver_response(
         self,
         conversation_id: ConversationId,
-        result: dict,
+        result: dict[str, Any],
         handle: ProgressHandle,
         view: ChatView,
-        session,
+        session: SessionInfo | None,
     ) -> None:
         """Format and send the OpenCode response, or show an error."""
         from formatting.markdown import clean_opencode_output, _assemble_response
@@ -320,10 +342,15 @@ class PromptService:
         # Track whether we actually delivered content
         is_success = result["returncode"] == 0
 
-        # Send formatted response via the view
+        # Send formatted response via the view. ``response_sent`` is True
+        # only when the WHOLE response reached the user (F8): a partially
+        # delivered response is a failure for status purposes.
         response_sent = await view.send(response)
 
-        # Close "Processing..." to "Completed" only if successful
+        # Always reach a terminal state — the placeholder must never be left
+        # stuck on "⏳". Before F8, an undelivered response called NEITHER
+        # finish NOR error, so the "⏳ OpenCode procesando..." message lived
+        # forever.
         if response_sent and is_success:
             try:
                 await handle.finish("\u2705 Completado.")
@@ -333,6 +360,15 @@ class PromptService:
                     module=__name__,
                     level=logging.DEBUG,
                 )
+        elif not response_sent:
+            await handle.error("\u26a0\ufe0f No se pudo entregar la respuesta.")
+        else:
+            # Defensive: a non-successful result that still delivered content.
+            # Unreachable today (non-zero exit is handled above) but keeps the
+            # placeholder from sticking if that changes.
+            await handle.error(
+                f"\u274c Error (c\u00f3digo {result['returncode']})."
+            )
 
         # Capture session ID for new sessions
         await self._capture_session_id(conversation_id, result["stdout"], session)
@@ -355,7 +391,7 @@ class PromptService:
         self,
         conversation_id: ConversationId,
         stdout: str,
-        session,
+        session: SessionInfo | None,
     ) -> None:
         """Extract and persist the real OpenCode session ID from stdout.
 
@@ -410,7 +446,7 @@ class PromptService:
         )
 
     @staticmethod
-    async def _stop_progress(progress_task: asyncio.Task) -> None:
+    async def _stop_progress(progress_task: asyncio.Task[Any]) -> None:
         """Cancel the periodic progress updater and await its termination.
 
         Called on EVERY path that reaches a terminal state (normal

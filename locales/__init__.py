@@ -9,6 +9,6 @@ def _load_locales() -> None:
     from locales import es
     _LOCALES["es"] = es
 
-def get_strings(lang: str = "es"):
+def get_strings(lang: str = "es") -> Any:
     _load_locales()
     return _LOCALES.get(lang, _LOCALES["es"])

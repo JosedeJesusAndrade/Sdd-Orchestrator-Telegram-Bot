@@ -10,18 +10,20 @@ import asyncio
 import os
 import re
 from pathlib import Path
+from typing import cast
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from handlers import authorized
+from handlers._guards import require_chat
 from config import CONTAINER_KEY
 from services.container import AppContainer
 
 
 def _get_container(context: ContextTypes.DEFAULT_TYPE) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data[CONTAINER_KEY]
+    return cast(AppContainer, context.application.bot_data[CONTAINER_KEY])
 
 
 async def _run_git_command(workdir: str, *args: str) -> tuple[int, str, str]:
@@ -88,7 +90,7 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     Uses per-chat workdir from settings. Reads CHANGELOG.md for PR body.
     Executes: git checkout -b → git add → git commit → git push → gh pr create
     """
-    chat_id = update.effective_chat.id
+    chat_id = require_chat(update).id
     container = _get_container(context)
     sender = container.message_sender
     store = container.session_store
@@ -109,18 +111,18 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     else:
         body = "PR generated via Telegram Bot."
 
-    await sender.reply_plain(update, f"📦 Creando PR: *{title[:80]}*...\nRama: `{branch_name}`")
+    await sender.send_plain(chat_id, f"📦 Creando PR: *{title[:80]}*...\nRama: `{branch_name}`")
 
     # Step 1: Create branch
     ret, out, err = await _run_git_command(workdir, "checkout", "-b", branch_name)
     if ret != 0:
-        await sender.reply_plain(update, f"❌ Error creando rama:\n`{err}`")
+        await sender.send_plain(chat_id, f"❌ Error creando rama:\n`{err}`")
         return
 
     # Step 2: Stage all changes
     ret, out, err = await _run_git_command(workdir, "add", ".")
     if ret != 0:
-        await sender.reply_plain(update, f"❌ Error en git add:\n`{err}`")
+        await sender.send_plain(chat_id, f"❌ Error en git add:\n`{err}`")
         return
 
     # Step 3: Commit
@@ -128,16 +130,16 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if ret != 0:
         # Check if nothing to commit (no changes)
         if "nothing to commit" in (out + err).lower():
-            await sender.reply_plain(update, "⚠️ No hay cambios para commitear.")
+            await sender.send_plain(chat_id, "⚠️ No hay cambios para commitear.")
             await _run_git_command(workdir, "checkout", "main")
             return
-        await sender.reply_plain(update, f"❌ Error en commit:\n`{err}`")
+        await sender.send_plain(chat_id, f"❌ Error en commit:\n`{err}`")
         return
 
     # Step 4: Push
     ret, out, err = await _run_git_command(workdir, "push", "-u", "origin", branch_name)
     if ret != 0:
-        await sender.reply_plain(update, f"❌ Error en push:\n`{err}`")
+        await sender.send_plain(chat_id, f"❌ Error en push:\n`{err}`")
         return
 
     # Step 5: Create PR via GitHub CLI
@@ -149,7 +151,7 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "--head", branch_name,
     )
     if ret != 0:
-        await sender.reply_plain(update, f"❌ Error creando PR:\n`{err}`")
+        await sender.send_plain(chat_id, f"❌ Error creando PR:\n`{err}`")
         return
 
     # Extract PR URL from gh output
@@ -159,8 +161,8 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             pr_url = line.strip()
             break
 
-    await sender.reply_plain(
-        update,
+    await sender.send_plain(
+        chat_id,
         f"✅ PR creada exitosamente.\n\n"
         f"📝 *Título:* {title[:100]}\n"
         f"🔗 {pr_url or out[:200]}"
@@ -179,11 +181,12 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     app.stop/shutdown), THEN sys.exit(42) is called.
     The launcher.bat babysitter detects code 42 and does git pull + restart.
     """
+    chat_id = require_chat(update).id
     container = _get_container(context)
     sender = container.message_sender
 
-    await sender.reply_plain(
-        update,
+    await sender.send_plain(
+        chat_id,
         "🔄 Recibido. Iniciando apagado controlado...\n"
         "El bot volverá en ~5 segundos."
     )
@@ -214,7 +217,7 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     With arg: switches the per-chat workdir to that project.
     Accepts full name, partial match, or alias (lowercase, no spaces).
     """
-    chat_id = update.effective_chat.id
+    chat_id = require_chat(update).id
     container = _get_container(context)
     sender = container.message_sender
     store = container.session_store
@@ -224,7 +227,7 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     from config import OPENCODE_WORKDIR
     parent = Path(OPENCODE_WORKDIR)
     if not parent.exists():
-        await sender.reply_plain(update, f"❌ Directorio no encontrado: `{parent}`")
+        await sender.send_plain(chat_id, f"❌ Directorio no encontrado: `{parent}`")
         return
 
     # Discover projects (folders with .git)
@@ -241,11 +244,11 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 if short not in projects:
                     projects[short] = entry
     except PermissionError:
-        await sender.reply_plain(update, "❌ Sin permisos para listar directorios.")
+        await sender.send_plain(chat_id, "❌ Sin permisos para listar directorios.")
         return
 
     if not projects:
-        await sender.reply_plain(update, "⚠️ No se encontraron proyectos con `.git` en el directorio.")
+        await sender.send_plain(chat_id, "⚠️ No se encontraron proyectos con `.git` en el directorio.")
         return
 
     # Get current workdir
@@ -265,7 +268,7 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 marker = "🟢" if str(entry) == str(current_path) else "  "
                 alias = name.lower().replace(" ", "-").split("-")[0]
                 lines.append(f"{marker} `{alias}` → {name}")
-        await sender.reply_plain(update, "\n".join(lines))
+        await sender.send_plain(chat_id, "\n".join(lines))
         return
 
     # Switch to project
@@ -279,16 +282,16 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             target = projects[matches[0]]
         elif len(matches) > 1:
             match_list = ", ".join(matches[:5])
-            await sender.reply_plain(update, f"⚠️ Múltiples coincidencias: {match_list}. Sé más específico.")
+            await sender.send_plain(chat_id, f"⚠️ Múltiples coincidencias: {match_list}. Sé más específico.")
             return
         else:
-            await sender.reply_plain(update, f"❌ Proyecto no encontrado: `{query}`")
+            await sender.send_plain(chat_id, f"❌ Proyecto no encontrado: `{query}`")
             return
 
     workdir = str(target)
     await store.set_chat_setting(chat_id, "workdir", workdir)
-    await sender.reply_plain(
-        update,
+    await sender.send_plain(
+        chat_id,
         f"✅ Workdir cambiado a:\n`{workdir}`\n\n"
         f"El próximo prompt usará este proyecto."
     )

@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from datetime import timedelta
+from typing import cast
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -23,6 +25,7 @@ from telegram.constants import ParseMode
 from config import OPENAI_API_KEY, CONTAINER_KEY
 from utils.logging import get_module_logger, log_exception, mask_chat_id
 from handlers import authorized
+from handlers._guards import require_chat, require_message, require_text
 from services.prompt_service import PromptAlreadyRunningError
 from services.telegram_chat_view import TelegramChatView
 from services.container import AppContainer
@@ -30,9 +33,9 @@ from services.container import AppContainer
 logger = get_module_logger(__name__)
 
 
-def _get_container(context) -> AppContainer:
+def _get_container(context: ContextTypes.DEFAULT_TYPE) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data[CONTAINER_KEY]
+    return cast(AppContainer, context.application.bot_data[CONTAINER_KEY])
 
 
 async def transcribe_voice(file_path: str, chat_id: int | None = None) -> str | None:
@@ -115,18 +118,27 @@ async def transcribe_voice(file_path: str, chat_id: int | None = None) -> str | 
 @authorized
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe and process as prompt."""
-    chat_id = update.effective_chat.id
+    chat_id = require_chat(update).id
+    msg = require_message(update)
     container = _get_container(context)
 
-    voice = update.message.voice
+    voice = msg.voice
     if not voice:
         return
 
-    if voice.duration < 1:
-        await update.message.reply_text("El audio es muy corto, no se detectó voz.")
+    # PTB types ``Voice.duration`` as ``int | datetime.timedelta``. Comparing a
+    # timedelta with an int raises TypeError, so normalize defensively.
+    raw_duration = voice.duration
+    duration = (
+        raw_duration.total_seconds()
+        if isinstance(raw_duration, timedelta)
+        else raw_duration
+    )
+    if duration < 1:
+        await msg.reply_text("El audio es muy corto, no se detectó voz.")
         return
 
-    progress_msg = await update.message.reply_text("\U0001f3a4 Transcribiendo audio...")
+    progress_msg = await msg.reply_text("\U0001f3a4 Transcribiendo audio...")
 
     temp_path = None
     try:
@@ -158,7 +170,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     except PromptAlreadyRunningError:
-        await update.message.reply_text(
+        await msg.reply_text(
             "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
         )
     except Exception as e:
@@ -205,10 +217,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     Raises PromptAlreadyRunningError if a prompt is already executing.
     The caller (@authorized decorator) ensures only authorized chats can use this.
     """
-    chat_id = update.effective_chat.id
+    chat_id = require_chat(update).id
+    msg = require_message(update)
     container = _get_container(context)
 
-    prompt = update.message.text.strip()
+    prompt = require_text(msg).strip()
     if not prompt:
         return
 
@@ -219,6 +232,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             view=TelegramChatView(container.message_sender, chat_id),
         )
     except PromptAlreadyRunningError:
-        await update.message.reply_text(
+        await msg.reply_text(
             "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
         )

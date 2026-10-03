@@ -10,42 +10,46 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 from services.ai_backend import AIBackendResult
 from services.bot_port import MessageInfo
-from services.chat_view import ChatView, ProgressHandle
+from services.chat_view import ChatView, ConversationId, ProgressHandle
 from services.prompt_service import PromptService
-from services.session_store import SessionStore
+from services.session_store import SessionInfo, SessionStore
 from services.telegram_chat_view import TelegramChatView
 
 
 # ── Fakes (core, frontend-agnostic) ────────────────────────────────────
-
-class FakeSession:
-    def __init__(self, name: str = "default", real_id: str | None = None) -> None:
-        self.name = name
-        self.real_id = real_id
-
 
 class FakeStore:
     def __init__(self, settings: dict | None = None) -> None:
         self.increments = 0
         self._settings = settings or {}
 
-    async def get_model(self, chat_id: int) -> str:
+    async def get_model(self, conversation_id: ConversationId) -> str:
         return "test/model"
 
-    async def get_active_session(self, chat_id: int) -> FakeSession:
-        return FakeSession()
+    async def get_active_session(
+        self, conversation_id: ConversationId
+    ) -> SessionInfo | None:
+        return SessionInfo(
+            name="default", real_id=None, title="default",
+            created="", last_used=None, prompt_count=0,
+        )
 
-    async def get_chat_setting(self, chat_id: int, key: str, default: object = None):
+    async def get_chat_setting(
+        self, conversation_id: ConversationId, key: str, default: Any = None
+    ) -> Any:
         return self._settings.get(key, default)
 
-    async def increment_prompt_count(self, chat_id: int) -> int:
+    async def increment_prompt_count(self, conversation_id: ConversationId) -> int:
         self.increments += 1
         return self.increments
 
-    async def update_session_id(self, chat_id: int, real_id: str) -> None:
+    async def update_session_id(
+        self, conversation_id: ConversationId, real_id: str
+    ) -> None:
         return None
 
 
@@ -75,9 +79,8 @@ class FakeBackend:
 class FakeFactory:
     def __init__(self, backend: FakeBackend) -> None:
         self._backend = backend
-        self._instances = {"opencode": backend}
 
-    def get(self, provider: str | None = None, **kwargs):
+    def create(self, provider: str | None = None, **kwargs):
         return self._backend
 
 
@@ -395,3 +398,219 @@ async def test_telegram_progress_placeholder_failure_logs_warning() -> None:
     assert record.levelno == logging.WARNING
     assert record.__dict__["event"] == "progress_placeholder_unavailable"
     assert record.__dict__["chat_id"] == 42
+
+
+# ── F3: per-conversation backend isolation ────────────────────────────
+
+class _RecordingBackend:
+    """Backend registered in the REAL factory; records cancel() targeting.
+
+    It blocks in ``execute`` until ``release`` is set so two conversations
+    are provably in flight at the same time.
+    """
+
+    instances: list[_RecordingBackend] = []
+    block: bool = False
+
+    def __init__(self, **_kwargs: object) -> None:
+        self.cancelled = False
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        if not _RecordingBackend.block:
+            self.release.set()
+        _RecordingBackend.instances.append(self)
+
+    async def execute(
+        self, prompt: str, model: str, session_id: str | None,
+        agent: str | None = None, workdir: str | None = None,
+        source_label: str = "",
+        timeout: int | None = None,
+    ) -> AIBackendResult:
+        self.started.set()
+        await self.release.wait()
+        return AIBackendResult(stdout=f"ok:{prompt}", returncode=0)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+async def test_f3_each_conversation_gets_own_backend_and_isolated_cancel() -> None:
+    """F3 (a): cancelling one conversation must never touch another's backend.
+
+    Before: the factory cached ONE shared backend whose single
+    ``_current_process`` field made ``cancel()`` kill whichever conversation
+    happened to own it. Now each conversation owns an independent instance.
+    """
+    from services.ai_provider_factory import AIProviderFactory
+
+    _RecordingBackend.instances = []
+    _RecordingBackend.block = True
+    factory = AIProviderFactory(default_provider="opencode")
+    factory.register("opencode", _RecordingBackend)
+    service = PromptService(session_store=FakeStore(), provider_factory=factory)
+
+    view_a = FakeChatView()
+    view_b = FakeChatView()
+    task_a = asyncio.create_task(service.execute(101, "alpha", view_a))
+    task_b = asyncio.create_task(service.execute(202, "beta", view_b))
+
+    try:
+        # Wait until BOTH conversations have their own started backend in flight.
+        for _ in range(200):
+            if len(_RecordingBackend.instances) == 2 and all(
+                b.started.is_set() for b in _RecordingBackend.instances
+            ):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("both conversations did not start concurrently")
+
+        backend_a = service._backends[101]
+        backend_b = service._backends[202]
+        assert backend_a is not backend_b, "each conversation must own its backend instance"
+        assert isinstance(backend_a, _RecordingBackend)
+        assert isinstance(backend_b, _RecordingBackend)
+
+        # Cancel ONLY conversation 101.
+        assert service.cancel(101) is True
+
+        assert backend_a.cancelled is True, "the cancelled conversation's backend must be hit"
+        assert backend_b.cancelled is False, "the OTHER conversation's backend must be untouched"
+
+        # Let both finish; A is marked cancelled, B completes normally.
+        backend_a.release.set()
+        backend_b.release.set()
+        await asyncio.gather(task_a, task_b)
+    finally:
+        _RecordingBackend.block = False
+
+    assert view_a.handles[0].errors == ["\u23f9\ufe0f Cancelado."]
+    assert view_a.sent == []
+    assert view_b.sent, "the untouched conversation must still deliver"
+    assert view_b.handles[0].finished == ["\u2705 Completado."]
+    assert service._backends == {}, "per-conversation backends must be released"
+
+
+async def test_f3_backend_released_after_execution() -> None:
+    """The per-conversation backend must not outlive its prompt (no leak)."""
+    from services.ai_provider_factory import AIProviderFactory
+
+    _RecordingBackend.instances = []
+    factory = AIProviderFactory(default_provider="opencode")
+    factory.register("opencode", _RecordingBackend)
+    service = PromptService(session_store=FakeStore(), provider_factory=factory)
+
+    view = FakeChatView()
+    await service.execute(conversation_id=1, prompt_text="x", view=view)
+
+    assert service._backends == {}, "the backend must be released after the prompt"
+
+
+# ── F8: partial delivery is a failure + placeholder never sticks ──────
+
+class _PartialDeliveryBot:
+    """BotPort fake: delivers the first fragment, fails the second one.
+
+    The long text passed by the tests splits into 2 fragments; fragment 2
+    fails BOTH the MDV2 attempt and the plain retry, so ``send_formatted``
+    returns 1 of 2.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.edits: list[str] = []
+
+    async def send_message(
+        self, chat_id: int, text: str, parse_mode: str | None = None,
+    ) -> MessageInfo:
+        if "parte 2/2" in text:
+            raise RuntimeError("transport failure")
+        self.sent.append(text)
+        return MessageInfo(chat_id=chat_id, message_id=len(self.sent), text=text)
+
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str,
+    ) -> MessageInfo:
+        self.edits.append(text)
+        return MessageInfo(chat_id=chat_id, message_id=message_id, text=text)
+
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        return True
+
+    async def get_me(self) -> dict:
+        return {"id": 1}
+
+
+def _two_fragment_text() -> str:
+    from config import TELEGRAM_MAX_MESSAGE_LENGTH
+    from formatting.markdown import split_message
+
+    text = "x" * (TELEGRAM_MAX_MESSAGE_LENGTH + 50)
+    assert len(split_message(text)) == 2
+    return text
+
+
+async def test_f8_partial_delivery_reports_failure_and_logs() -> None:
+    """F8 (a): ``send`` means WHOLE delivery; partial emits delivery_partial."""
+    import logging
+
+    from services.message_sender import MessageSender
+
+    text = _two_fragment_text()
+    bot = _PartialDeliveryBot()
+    sender = MessageSender(bot)
+    view = TelegramChatView(sender, 7)
+
+    class _Probe(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(level=logging.DEBUG)
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    logger = logging.getLogger("opencode_bot.services.message_sender")
+    probe = _Probe()
+    logger.addHandler(probe)
+    try:
+        ok = await view.send(text)
+    finally:
+        logger.removeHandler(probe)
+
+    assert ok is False, "a partially delivered response must NOT report success"
+
+    partial = [
+        r for r in probe.records
+        if r.__dict__.get("event") == "delivery_partial"
+    ]
+    assert len(partial) == 1, "partial delivery must emit exactly one event"
+    assert partial[0].__dict__["sent"] == 1
+    assert partial[0].__dict__["total"] == 2
+    assert partial[0].levelno == logging.WARNING
+
+
+async def test_f8_partial_delivery_leaves_placeholder_in_error_state() -> None:
+    """F8: an undelivered response must end the placeholder, not leave "⏳".
+
+    Before: ``_deliver_response`` called NEITHER finish NOR error when
+    ``response_sent`` was False, so "⏳ OpenCode procesando..." stuck forever.
+    """
+    from services.message_sender import MessageSender
+
+    text = _two_fragment_text()
+    bot = _PartialDeliveryBot()
+    sender = MessageSender(bot)
+    view = TelegramChatView(sender, 7)
+
+    backend = FakeBackend(AIBackendResult(stdout=text, returncode=0))
+    service = PromptService(
+        session_store=FakeStore(), provider_factory=FakeFactory(backend),
+    )
+
+    await service.execute(conversation_id=7, prompt_text="hi", view=view)
+
+    assert bot.edits, "the placeholder must be edited to a terminal state"
+    assert bot.edits[-1].startswith("\u26a0\ufe0f"), bot.edits[-1]
+    assert all(
+        "OpenCode procesando" not in e for e in bot.edits
+    ), "placeholder must not remain in the processing state"

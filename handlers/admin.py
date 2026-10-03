@@ -9,6 +9,7 @@ Architecture change (Week 2→3):
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -17,20 +18,22 @@ from config import DEFAULT_SESSION_NAME, CONTAINER_KEY
 from persistence.sessions import load_session_map_safe, fetch_opencode_sessions
 from utils.logging import get_module_logger, log_exception, mask_chat_id
 from handlers import authorized
+from handlers._guards import require_chat, require_message
 from services.container import AppContainer
 
 logger = get_module_logger(__name__)
 
 
-def _get_container(context) -> AppContainer:
+def _get_container(context: ContextTypes.DEFAULT_TYPE) -> AppContainer:
     """Extract the typed AppContainer from PTB context."""
-    return context.application.bot_data[CONTAINER_KEY]
+    return cast(AppContainer, context.application.bot_data[CONTAINER_KEY])
 
 
 @authorized
 async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test command: sends a hardcoded MarkdownV2 message to verify API works."""
-    chat_id = update.effective_chat.id
+    msg = require_message(update)
+    chat_id = require_chat(update).id
     container = _get_container(context)
 
     test_msg = (
@@ -44,7 +47,7 @@ async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     msgs = await container.message_sender.send_formatted(chat_id, test_msg)
     if msgs:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Test message sent with MarkdownV2. Check if formatting works."
         )
     else:
@@ -52,7 +55,7 @@ async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "MarkdownV2 test failed",
             extra={"event": "mdv2_test_failed", "chat_id": chat_id},
         )
-        await update.message.reply_text(
+        await msg.reply_text(
             "MarkdownV2 test FAILED. Check bot logs for details."
         )
         await container.message_sender.send_plain(chat_id, test_msg)
@@ -63,7 +66,7 @@ async def session_preview_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """Debug: show raw session state from both sessions.json and OpenCode."""
-    chat_id = update.effective_chat.id
+    chat_id = require_chat(update).id
     container = _get_container(context)
 
     smap = await load_session_map_safe()

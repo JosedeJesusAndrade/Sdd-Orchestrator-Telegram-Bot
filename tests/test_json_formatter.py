@@ -6,6 +6,7 @@ The masking tests are the security contract: JSON mode MUST apply the same
 import json
 import logging
 import sys
+from types import TracebackType
 
 from utils.logging import (
     JsonFormatter,
@@ -25,7 +26,9 @@ def _record(level: int, msg: str, exc_info=None, **extra) -> logging.LogRecord:
     return record
 
 
-def _caught_exc_info():
+def _caught_exc_info() -> (
+    tuple[type[BaseException] | None, BaseException | None, TracebackType | None]
+):
     try:
         raise ValueError("explota")
     except ValueError:

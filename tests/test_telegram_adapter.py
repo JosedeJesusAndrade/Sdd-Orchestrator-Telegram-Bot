@@ -14,8 +14,10 @@ Contract after the fix:
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import pytest
+from telegram import Bot
 
 from services.bot_port import MessageInfo
 from services.message_sender import MessageSender
@@ -58,7 +60,7 @@ class _Probe(logging.Handler):
 
 async def test_adapter_send_message_is_a_single_passthrough_call() -> None:
     bot = _RecordingBot()
-    adapter = TelegramAdapter(bot)
+    adapter = TelegramAdapter(cast(Bot, bot))
 
     info = await adapter.send_message(5, "hello", parse_mode="MarkdownV2")
 
@@ -80,7 +82,7 @@ async def test_adapter_send_message_raises_without_falling_back() -> None:
     the retry.
     """
     bot = _RecordingBot(error=RuntimeError("MarkdownV2 rejected"))
-    adapter = TelegramAdapter(bot)
+    adapter = TelegramAdapter(cast(Bot, bot))
 
     with pytest.raises(RuntimeError, match="MarkdownV2 rejected"):
         await adapter.send_message(5, "*bad*", parse_mode="MarkdownV2")
@@ -97,11 +99,24 @@ class _FlakyBotPort:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None]] = []
 
-    async def send_message(self, chat_id, text, parse_mode=None):
+    async def send_message(
+        self, chat_id: int, text: str, parse_mode: str | None = None
+    ) -> MessageInfo:
         self.calls.append((text, parse_mode))
         if parse_mode == "MarkdownV2":
             raise RuntimeError("MarkdownV2 rejected")
         return MessageInfo(chat_id=chat_id, message_id=7, text=text)
+
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str
+    ) -> MessageInfo | None:
+        return None
+
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        return True
+
+    async def get_me(self) -> dict[str, Any]:
+        return {}
 
 
 async def test_message_sender_still_falls_back_end_to_end() -> None:

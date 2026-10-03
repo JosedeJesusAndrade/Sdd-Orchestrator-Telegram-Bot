@@ -13,13 +13,9 @@ import logging
 import os
 import subprocess
 import time
-from typing import TYPE_CHECKING
 
 from services.ai_backend import AIBackendResult
 from utils.logging import get_module_logger, log_exception
-
-if TYPE_CHECKING:
-    pass
 
 
 logger = get_module_logger(__name__)
@@ -32,7 +28,7 @@ class OpenCodeCLIBackend:
         self._cmd = opencode_cmd
         self._workdir = workdir
         self._timeout = timeout
-        self._current_process: subprocess.Popen | None = None
+        self._current_process: asyncio.subprocess.Process | None = None
 
     async def execute(
         self, prompt: str, model: str, session_id: str | None,

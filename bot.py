@@ -12,6 +12,8 @@ import os
 import signal
 import sys
 import time
+from typing import Any
+
 import nest_asyncio
 
 from datetime import datetime, timezone
@@ -216,7 +218,10 @@ async def error_handler(update: object | None, context: ContextTypes.DEFAULT_TYP
 
 
 # ── Connectivity monitor (background asyncio task, no extra deps) ──
-async def _connectivity_monitor(app: Application, stop_event: asyncio.Event) -> None:
+async def _connectivity_monitor(
+    app: Application[Any, Any, Any, Any, Any, Any],
+    stop_event: asyncio.Event,
+) -> None:
     """Background task: periodically pings Telegram to detect connection loss/recovery.
 
     Uses a simple asyncio loop instead of JobQueue to avoid the
@@ -246,7 +251,7 @@ async def _connectivity_monitor(app: Application, stop_event: asyncio.Event) -> 
             await asyncio.sleep(1)
 
 
-def build_application() -> Application:
+def build_application() -> Application[Any, Any, Any, Any, Any, Any]:
     """Build and configure the Application without running it."""
 
     # ── Suppress python-telegram-bot's internal traceback spam ──
@@ -313,14 +318,21 @@ async def run_bot() -> None:
 
     await app.initialize()
     await app.start()
+    assert app.updater is not None
     await app.updater.start_polling()
 
     # ── Build the service layer and inject into PTB application context ──
     bot_port = TelegramAdapter(app.bot)
 
+    # Register the provider class + its construction defaults ONCE. The
+    # factory no longer caches an instance (F3): PromptService builds one
+    # backend per conversation so cancels stay isolated.
     provider_factory = AIProviderFactory(default_provider="opencode")
-    provider_factory.register("opencode", OpenCodeCLIBackend)
-    provider_factory.get("opencode", opencode_cmd=OPENCODE_CMD, workdir=OPENCODE_WORKDIR, timeout=OPENCODE_TIMEOUT)
+    provider_factory.register(
+        "opencode", OpenCodeCLIBackend,
+        opencode_cmd=OPENCODE_CMD, workdir=OPENCODE_WORKDIR,
+        timeout=OPENCODE_TIMEOUT,
+    )
 
     session_store = SessionStore(SESSIONS_PATH)
     message_sender = MessageSender(bot_port)
@@ -430,6 +442,7 @@ async def run_bot() -> None:
         # SIGTERM); awaiting it only surfaces the cancellation — silence is
         # correct, it is not an error.
         pass
+    assert app.updater is not None
     await app.updater.stop()
     await app.stop()
     await app.shutdown()

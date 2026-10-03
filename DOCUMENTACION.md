@@ -277,20 +277,23 @@ Para integrar un provider completamente nuevo (por ejemplo, API de OpenAI):
 Ejemplo de implementación:
 
 ```python
-from services.ai_backend import AIBackend, AIResult
+from services.ai_backend import AIBackend, AIBackendResult
 
 class OpenAIAPIBackend:
     def __init__(self, api_key: str, timeout: int) -> None:
         self._api_key = api_key
         self._timeout = timeout
 
-    async def execute(self, prompt: str, *, model: str,
-                      session_id: str | None, workdir: str,
-                      timeout: int, chat_id: int) -> AIResult:
+    async def execute(self, prompt: str, model: str,
+                      session_id: str | None,
+                      agent: str | None = None,
+                      workdir: str | None = None,
+                      source_label: str = "",
+                      timeout: int | None = None) -> AIBackendResult:
         # Implementación específica del provider
         ...
 
-    async def cancel(self, chat_id: int) -> bool:
+    def cancel(self) -> None:
         # Lógica de cancelación
         ...
 ```
@@ -619,11 +622,13 @@ await container.prompt_service.execute(update, context, text)
 
 ```python
 class AIBackend(Protocol):
-    async def execute(self, prompt: str, *, model: str,
+    async def execute(self, prompt: str, model: str,
                       session_id: str | None,
-                      workdir: str, timeout: int,
-                      chat_id: int) -> AIResult: ...
-    async def cancel(self, chat_id: int) -> bool: ...
+                      agent: str | None = None,
+                      workdir: str | None = None,
+                      source_label: str = "",
+                      timeout: int | None = None) -> AIBackendResult: ...
+    def cancel(self) -> None: ...
 ```
 
 `AIBackend` define la interfaz para cualquier backend de IA. La

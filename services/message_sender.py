@@ -20,13 +20,28 @@ Architecture rationale:
 from __future__ import annotations
 
 import logging
+from typing import Protocol
 
-from telegram import Update
 from services.bot_port import BotPort, MessageInfo
 from formatting.markdown import split_message
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
+
+
+class MessageSenderPort(Protocol):
+    """Structural contract for the delivery surface used by TelegramChatView."""
+
+    async def send_formatted(self, chat_id: int, text: str) -> list[MessageInfo]:
+        ...
+
+    async def send_plain(self, chat_id: int, text: str) -> MessageInfo | None:
+        ...
+
+    async def edit_message(
+        self, chat_id: int, message_id: int, text: str
+    ) -> MessageInfo | None:
+        ...
 
 
 class MessageSender:
@@ -49,13 +64,29 @@ class MessageSender:
         """Send text with MarkdownV2 formatting.
 
         Auto-splits long messages. Falls back to plain text if MDV2 fails.
-        Returns list of sent MessageInfo objects (empty if all failed).
+        Returns the list of successfully sent MessageInfo objects.
+
+        F8: when fewer fragments land than were produced, emit a
+        ``delivery_partial`` event with ``sent``/``total`` so partial
+        deliveries are observable. The caller (ChatView) interprets an
+        incomplete list as a failed delivery.
         """
+        fragments = split_message(text)
         messages: list[MessageInfo] = []
-        for fragment in split_message(text):
+        for fragment in fragments:
             msg = await self._send_mdv2_with_fallback(chat_id, fragment)
             if msg is not None:
                 messages.append(msg)
+        if len(messages) < len(fragments):
+            logger.warning(
+                "Partial delivery",
+                extra={
+                    "event": "delivery_partial",
+                    "chat_id": chat_id,
+                    "sent": len(messages),
+                    "total": len(fragments),
+                },
+            )
         return messages
 
     async def send_plain(self, chat_id: int, text: str) -> MessageInfo | None:
@@ -104,14 +135,6 @@ class MessageSender:
                     level=logging.DEBUG,
                 )
             return None
-
-    async def reply_formatted(self, update: Update, text: str) -> list[MessageInfo]:
-        """Reply to the message in the update with formatted text."""
-        return await self.send_formatted(update.effective_chat.id, text)
-
-    async def reply_plain(self, update: Update, text: str) -> MessageInfo | None:
-        """Reply to the message in the update with plain text."""
-        return await self.send_plain(update.effective_chat.id, text)
 
     # ── Internal ────────────────────────────────────────────────────
 

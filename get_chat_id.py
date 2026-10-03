@@ -34,7 +34,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     print("Bot started. Send /start to your bot on Telegram...")
     print("(This will run until you press Ctrl+C)\n")
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":

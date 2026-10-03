@@ -4,9 +4,14 @@ This is the ONLY class in the entire project that imports telegram.Bot.
 """
 from __future__ import annotations
 import logging
-from telegram import Bot
+from typing import Any
+
+from telegram import Bot, Message
 from services.bot_port import MessageInfo
-from utils.logging import log_exception
+from utils.logging import get_module_logger, log_exception
+
+
+logger = get_module_logger(__name__)
 
 
 class TelegramAdapter:
@@ -38,6 +43,19 @@ class TelegramAdapter:
             msg = await self._bot.edit_message_text(
                 chat_id=chat_id, message_id=message_id, text=text,
             )
+            # PTB returns ``True`` instead of a ``Message`` for inline-message
+            # edits. We always pass chat_id + message_id (regular messages), so
+            # this should not happen — but the type says it can, and touching
+            # ``.message_id`` on the bool branch would crash. Fail softly.
+            if not isinstance(msg, Message):
+                logger.warning(
+                    "edit_message_text returned a non-Message value",
+                    extra={
+                        "event": "edit_message_text_non_message",
+                        "return_type": type(msg).__name__,
+                    },
+                )
+                return None
             return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=msg.text or text)
         except Exception:
             try:
@@ -63,6 +81,6 @@ class TelegramAdapter:
             )
             return False
     
-    async def get_me(self) -> dict:
+    async def get_me(self) -> dict[str, Any]:
         user = await self._bot.get_me()
         return {"id": user.id, "username": user.username, "first_name": user.first_name}

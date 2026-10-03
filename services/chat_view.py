@@ -17,9 +17,18 @@ Contract:
     ChatView.source_label -> str
         Frontend identity prepended to the engine prompt (e.g. "📱 Telegram").
     ChatView.send(text) -> bool
-        Deliver a final message; True if it reached the user.
+        Deliver a final message; True only if the WHOLE message reached the
+        user (every fragment). Partial delivery is reported as False (F8).
     ChatView.start_progress(text) -> ProgressHandle
         Open an in-place status placeholder and return its handle.
+
+Future evolution (option b — NOT implemented): if a frontend needs to render
+"⚠️ Entregado parcialmente 4/5" it must know the counts, which a boolean
+erases. The transport already computes both (``MessageSender.send_formatted``
+logs ``sent``/``total``); the natural upgrade is to change this port to
+``send(text) -> SendResult(sent: int, total: int)`` and have the core
+translate it into a user-facing partial message. Deferred until the Flet
+frontend actually needs per-fragment status; today the boolean is enough.
 """
 
 from __future__ import annotations

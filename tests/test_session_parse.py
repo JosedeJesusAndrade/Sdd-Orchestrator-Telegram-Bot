@@ -1,7 +1,8 @@
 """Tests for parse_opencode_session_list()."""
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from persistence.sessions import parse_opencode_session_list

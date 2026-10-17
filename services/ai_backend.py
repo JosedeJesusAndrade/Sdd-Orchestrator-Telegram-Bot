@@ -8,6 +8,7 @@ IS an AIBackend. No inheritance needed. Supports:
   - MockAIBackend (testing)
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -25,7 +26,7 @@ class AIBackendResult:
 @runtime_checkable
 class AIBackend(Protocol):
     """Protocol for AI execution backends."""
-    
+
     async def execute(
         self,
         prompt: str,
@@ -43,7 +44,7 @@ class AIBackend(Protocol):
                 backend's configured default" (e.g. the constructor timeout).
         """
         ...
-    
+
     def cancel(self) -> None:
         """Cancel the current execution (if any)."""
         ...

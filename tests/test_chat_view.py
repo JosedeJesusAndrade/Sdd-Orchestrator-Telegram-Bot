@@ -19,7 +19,6 @@ from services.prompt_service import PromptService
 from services.session_store import SessionInfo, SessionStore
 from services.telegram_chat_view import TelegramChatView
 
-
 # ── Fakes (core, frontend-agnostic) ────────────────────────────────────
 
 class FakeStore:
@@ -85,7 +84,7 @@ class FakeFactory:
 
 
 class FakeProgress:
-    def __init__(self, view: "FakeChatView", text: str) -> None:
+    def __init__(self, view: FakeChatView, text: str) -> None:
         self._view = view
         self.opening_text = text
         self.updates: list[str] = []

@@ -1,5 +1,5 @@
 """Admin handlers: /test_md, /session_preview.
- 
+
 Architecture change (Week 2→3):
   All handlers now access services via AppContainer from PTB context
   instead of lazy-importing the bot module.
@@ -14,12 +14,12 @@ from typing import cast
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import DEFAULT_SESSION_NAME, CONTAINER_KEY
-from persistence.sessions import load_session_map_safe, fetch_opencode_sessions
-from utils.logging import get_module_logger, log_exception, mask_chat_id
+from config import CONTAINER_KEY, DEFAULT_SESSION_NAME
 from handlers import authorized
 from handlers._guards import require_chat, require_message
+from persistence.sessions import fetch_opencode_sessions, load_session_map_safe
 from services.container import AppContainer
+from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
 
@@ -101,7 +101,7 @@ async def session_preview_command(
             module=__name__,
             level=logging.WARNING,
         )
-        lines.append("\u274c Error: {}".format(e))
+        lines.append(f"\u274c Error: {e}")
 
     msg = "\n".join(lines)
 

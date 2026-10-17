@@ -1,6 +1,10 @@
 """Tests for load_session_map() and save_session_map()."""
 
-import sys, os, json, asyncio
+import asyncio
+import json
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from persistence.sessions import load_session_map, save_session_map_atomic

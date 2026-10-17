@@ -12,7 +12,7 @@ Architecture rationale:
     - Public (no underscore = part of the package's API)
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def relative_time(past_dt: datetime) -> str:
@@ -31,20 +31,20 @@ def relative_time(past_dt: datetime) -> str:
     Returns:
         A Spanish string like "hace X seg/min/h/d".
     """
-    seconds = int((datetime.now(timezone.utc) - past_dt).total_seconds())
+    seconds = int((datetime.now(UTC) - past_dt).total_seconds())
     if seconds < 0:
         return "ahora"
     if seconds < 60:
-        return "hace {} seg".format(seconds)
+        return f"hace {seconds} seg"
     minutes = seconds // 60
     if minutes < 60:
-        return "hace {} min".format(minutes)
+        return f"hace {minutes} min"
     hours = minutes // 60
     minutes_rem = minutes % 60
     if hours < 24:
         if minutes_rem:
-            return "hace {}h {}min".format(hours, minutes_rem)
-        return "hace {}h".format(hours)
+            return f"hace {hours}h {minutes_rem}min"
+        return f"hace {hours}h"
     days = hours // 24
     hours_rem = hours % 24
-    return "hace {}d {}h".format(days, hours_rem)
+    return f"hace {days}d {hours_rem}h"

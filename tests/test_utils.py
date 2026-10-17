@@ -2,17 +2,17 @@
 minimal_escape_mdv2, split_message, sanitize_markdownv2, _filter_stderr,
 _remove_tool_traces."""
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from formatting.markdown import (
-    clean_opencode_output, 
-    telegramify_markdown,
-    minimal_escape_mdv2, 
-    split_message,
     _filter_stderr,
-    _remove_tool_traces
+    clean_opencode_output,
+    minimal_escape_mdv2,
+    split_message,
+    telegramify_markdown,
 )
 
 

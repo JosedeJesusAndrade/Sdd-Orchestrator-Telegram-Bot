@@ -29,30 +29,30 @@ def _filter_stderr(stderr: str) -> str:
 
 def _remove_tool_traces(text: str) -> str:
     """Remove tool call trace lines (single and multi-line JSON).
-    
-    Detects lines starting with ⚙ (or its cp1252-mangled form âš™) 
+
+    Detects lines starting with ⚙ (or its cp1252-mangled form âš™)
     and skips them plus any multi-line JSON that follows.
     """
     result = []
     in_tool_trace = False
     brace_depth = 0
-    
+
     for line in text.split('\n'):
         stripped = line.strip()
-        
+
         # Detect start of tool trace: ⚙ (U+2699) or âš™ (mangled UTF-8 via cp1252)
         if stripped.startswith('⚙') or stripped.startswith('âš™'):
             in_tool_trace = True
             brace_depth = 0
-        
+
         if in_tool_trace:
             brace_depth += stripped.count('{') - stripped.count('}')
             if brace_depth <= 0 and ('{' in stripped or '}' in stripped):
                 in_tool_trace = False
             continue
-        
+
         result.append(line)
-    
+
     return '\n'.join(result)
 
 
@@ -133,14 +133,17 @@ def telegramify_markdown(text: str) -> str:
 
         # Detect table: line starts/ends with | AND next line is separator (|---|)
         if stripped.startswith('|') and stripped.endswith('|'):
-            if not in_table:
-                if next_stripped.startswith('|') and '---' in next_stripped:
-                    in_table = True
+            if (
+                not in_table
+                and next_stripped.startswith('|')
+                and '---' in next_stripped
+            ):
+                in_table = True
             if in_table:
                 # Skip separator lines (|---|---|)
                 if not all(c in '|-: ' for c in stripped.replace('|', '-')):
                     clean = stripped.strip('|').strip()
-                    table_lines.append("│ {clean} │".format(clean=clean))
+                    table_lines.append(f"│ {clean} │")
                 continue
         else:
             if in_table:
@@ -159,7 +162,7 @@ def telegramify_markdown(text: str) -> str:
 
 def sanitize_markdownv2(text: str) -> str:
     """Escape MarkdownV2 special characters for Telegram.
-    
+
     Escape rules per Telegram Bot API:
     - Outside code blocks/inline: _ * [ ] ( ) ~ ` > # + - = | { } . !
     - Inside code blocks/inline: ` (backtick) and \\ (backslash)
@@ -167,7 +170,7 @@ def sanitize_markdownv2(text: str) -> str:
     result = []
     in_code_block = False
     in_inline_code = False
-    
+
     i = 0
     while i < len(text):
         if text[i:i+3] == '```':
@@ -175,15 +178,15 @@ def sanitize_markdownv2(text: str) -> str:
             result.append('```')
             i += 3
             continue
-        
+
         if not in_code_block and text[i] == '`':
             in_inline_code = not in_inline_code
             result.append('`')
             i += 1
             continue
-        
+
         ch = text[i]
-        
+
         if in_code_block or in_inline_code:
             if ch in ('`', '\\'):
                 result.append('\\' + ch)
@@ -194,9 +197,9 @@ def sanitize_markdownv2(text: str) -> str:
                 result.append('\\' + ch)
             else:
                 result.append(ch)
-        
+
         i += 1
-    
+
     return ''.join(result)
 
 

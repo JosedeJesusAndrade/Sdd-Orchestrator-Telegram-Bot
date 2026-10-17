@@ -15,9 +15,9 @@ from typing import cast
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from config import CONTAINER_KEY
 from handlers import authorized
 from handlers._guards import require_chat
-from config import CONTAINER_KEY
 from services.container import AppContainer
 
 
@@ -191,7 +191,6 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "El bot volverá en ~5 segundos."
     )
 
-    import logging
     from utils.logging import get_module_logger
     logger = get_module_logger(__name__)
     logger.info(

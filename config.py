@@ -1,9 +1,10 @@
 """Configuration for Telegram-OpenCode Bridge bot."""
-import os
-import sys
 import logging
 import logging.handlers
+import os
+import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # ─── Paths ───
@@ -164,7 +165,7 @@ def resolve_opencode_cmd() -> str:
         ("shutil.which('opencode.cmd')", shutil.which("opencode.cmd")),
         ("known npm path", known_npm_path),
     ]
-    for source, path in candidates:
+    for _source, path in candidates:
         if path and os.path.isfile(path):
             return path
     return "opencode"
@@ -195,7 +196,7 @@ MODEL_ALIASES = {
 }
 
 def resolve_model(alias_or_full: str) -> str:
-    for provider, aliases in MODEL_ALIASES.items():
+    for _provider, aliases in MODEL_ALIASES.items():
         if alias_or_full in aliases:
             return aliases[alias_or_full]
     return alias_or_full

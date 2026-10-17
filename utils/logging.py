@@ -264,9 +264,8 @@ class KeyValueFormatter(logging.Formatter):
         # template — this mirrors that behavior verbatim, so the traceback of
         # every log_exception(..., exc_info=True) record actually reaches the
         # sink.
-        if record.exc_info:
-            if not record.exc_text:
-                record.exc_text = self.formatException(record.exc_info)
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self.formatException(record.exc_info)
         if record.exc_text:
             if s and not s.endswith("\n"):
                 s += "\n"

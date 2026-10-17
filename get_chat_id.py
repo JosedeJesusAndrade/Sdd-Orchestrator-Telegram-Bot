@@ -3,15 +3,16 @@ Run this script, then send /start to your bot on Telegram.
 Your chat ID will be printed here.
 """
 
-import os
 import asyncio
-import nest_asyncio
+import os
 from pathlib import Path
+
+import nest_asyncio
 
 nest_asyncio.apply()
 
-from dotenv import load_dotenv
-from telegram.ext import Application, CommandHandler
+from dotenv import load_dotenv  # noqa: E402  (import order: after nest_asyncio.apply())
+from telegram.ext import Application, CommandHandler  # noqa: E402  (same)
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(ENV_PATH)

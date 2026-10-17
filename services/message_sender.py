@@ -1,5 +1,5 @@
 """MessageSender: unified Telegram message delivery with formatting support.
- 
+
 Architecture rationale:
   Previously, every handler called `send_telegram_mdv2` (formatting/markdown.py)
   directly. That function:
@@ -22,8 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from services.bot_port import BotPort, MessageInfo
 from formatting.markdown import split_message
+from services.bot_port import BotPort, MessageInfo
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)

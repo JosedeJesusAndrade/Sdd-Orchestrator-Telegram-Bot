@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -199,7 +199,7 @@ class SessionStore:
         if name in sessions:
             raise SessionExistsError(f"Session '{name}' already exists")
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         sessions[name] = {
             "id": None,
             "title": name,
@@ -280,7 +280,7 @@ class SessionStore:
                 data[cid]["active"] = remaining[0]
             else:
                 data[cid]["active"] = DEFAULT_SESSION_NAME
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 data.setdefault(cid, {}).setdefault("sessions", {})[DEFAULT_SESSION_NAME] = {
                     "id": None,
                     "title": DEFAULT_SESSION_NAME,
@@ -356,7 +356,7 @@ class SessionStore:
             .setdefault(active_name, {})
         )
         session["prompt_count"] = session.get("prompt_count", 0) + 1
-        session["last_used"] = datetime.now(timezone.utc).isoformat()
+        session["last_used"] = datetime.now(UTC).isoformat()
         await self._save(data)
         count: int = session["prompt_count"]
         return count

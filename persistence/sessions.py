@@ -1,17 +1,18 @@
 """Session persistence layer for Telegram-OpenCode bridge.
 Handles sessions.json with lock protection, TTL cache, and atomic writes."""
 
+import asyncio
 import json
 import logging
 import re
 import shutil
-import time
-import asyncio
 import subprocess
-from pathlib import Path
+import time
+from datetime import UTC
 from typing import Any
 
-from config import SESSION_DB as SESSION_DB, OPENCODE_CMD, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT
+from config import DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, OPENCODE_CMD
+from config import SESSION_DB as SESSION_DB
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
@@ -242,11 +243,11 @@ async def add_session(chat_id: int, session_name: str, real_id: str | None = Non
     smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     sessions = chat_data.setdefault("sessions", {})
-    from datetime import datetime, timezone
+    from datetime import datetime
     sessions[session_name] = {
         "id": real_id,
         "title": title or session_name,
-        "created": datetime.now(timezone.utc).isoformat(),
+        "created": datetime.now(UTC).isoformat(),
         "last_used": None,
         "prompt_count": 0,
     }

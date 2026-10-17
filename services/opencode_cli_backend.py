@@ -17,7 +17,6 @@ import time
 from services.ai_backend import AIBackendResult
 from utils.logging import get_module_logger, log_exception
 
-
 logger = get_module_logger(__name__)
 
 
@@ -124,7 +123,7 @@ class OpenCodeCLIBackend:
                 stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
                 returncode=returncode,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             elapsed = time.monotonic() - start_time
             logger.warning(
                 "Subprocess timeout",

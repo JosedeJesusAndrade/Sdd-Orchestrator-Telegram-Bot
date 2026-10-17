@@ -1,5 +1,5 @@
 """Command handlers: /start, /help, /status, /model, /cancel, /new, /open.
-  
+
 Architecture change (Week 2→3):
   All handlers now access services via AppContainer from PTB context
   instead of lazy-importing the bot module. This eliminates the
@@ -20,17 +20,19 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    DEFAULT_MODEL, DEFAULT_SESSION_NAME, CONTAINER_KEY,
-    MODEL_ALIASES, resolve_model,
+    CONTAINER_KEY,
+    DEFAULT_MODEL,
+    DEFAULT_SESSION_NAME,
+    resolve_model,
 )
-from utils.logging import get_module_logger, log_exception, mask_chat_id
-from utils.time_formatting import relative_time
 from handlers import authorized
 from handlers._guards import require_chat, require_message
+from locales import get_strings
+from services.container import AppContainer
 from services.prompt_service import PromptAlreadyRunningError
 from services.telegram_chat_view import TelegramChatView
-from services.container import AppContainer
-from locales import get_strings
+from utils.logging import get_module_logger, log_exception, mask_chat_id
+from utils.time_formatting import relative_time
 
 logger = get_module_logger(__name__)
 
@@ -126,7 +128,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Try to compute relative time for last_used
         if session.last_used:
             try:
-                from datetime import datetime, timezone
+                from datetime import datetime
                 last_dt = datetime.fromisoformat(session.last_used)
                 last_used = relative_time(last_dt)
             except Exception:
@@ -136,7 +138,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # For created time
         if session.created:
             try:
-                from datetime import datetime, timezone
+                from datetime import datetime
                 created_dt = datetime.fromisoformat(session.created)
                 first_msg = relative_time(created_dt)
             except Exception:
@@ -154,29 +156,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         uptime_seconds = int(time.time() - container.start_time)
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
-        uptime_str = "{}h {}m {}s".format(hours, minutes, seconds)
+        uptime_str = f"{hours}h {minutes}m {seconds}s"
     else:
         uptime_str = "desconocido"
 
     await msg.reply_text(
         "\U0001f4ca Estado de la sesión\n"
-        "\u251c\u2500 Nombre: {session_name}\n"
-        "\u251c\u2500 ID OpenCode: {session_id_display}\n"
-        "\u251c\u2500 Modelo: {model}\n"
-        "\u251c\u2500 Rama: {branch}\n"
-        "\u251c\u2500 Primera interacción: {first_msg}\n"
-        "\u251c\u2500 Última interacción: {last_used}\n"
-        "\u251c\u2500 Total prompts: {prompt_count}\n"
-        "\u2514\u2500 Uptime del bot: {uptime_str}".format(
-            model=model,
-            session_name=session_name,
-            session_id_display=session_id_display,
-            branch=branch,
-            first_msg=first_msg,
-            last_used=last_used,
-            prompt_count=prompt_count,
-            uptime_str=uptime_str,
-        )
+        f"\u251c\u2500 Nombre: {session_name}\n"
+        f"\u251c\u2500 ID OpenCode: {session_id_display}\n"
+        f"\u251c\u2500 Modelo: {model}\n"
+        f"\u251c\u2500 Rama: {branch}\n"
+        f"\u251c\u2500 Primera interacción: {first_msg}\n"
+        f"\u251c\u2500 Última interacción: {last_used}\n"
+        f"\u251c\u2500 Total prompts: {prompt_count}\n"
+        f"\u2514\u2500 Uptime del bot: {uptime_str}"
     )
 
 
@@ -203,8 +196,8 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         },
     )
     await msg.reply_text(
-        "\U0001f504 Sesión '{name}' reiniciada. "
-        "El próximo mensaje comenzará desde cero.".format(name=active_name)
+        f"\U0001f504 Sesión '{active_name}' reiniciada. "
+        "El próximo mensaje comenzará desde cero."
     )
 
 
@@ -215,16 +208,16 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat_id = require_chat(update).id
     args = context.args
     container = _get_container(context)
-    S = get_strings()
+    strings = get_strings()
 
     if not args:
         model = await container.session_store.get_model(chat_id)
-        await msg.reply_text(S.MODEL_CURRENT.format(model=model))
+        await msg.reply_text(strings.MODEL_CURRENT.format(model=model))
         return
 
     model_value = resolve_model(args[0].lower())
     await container.session_store.set_model(chat_id, model_value)
-    await msg.reply_text(S.MODEL_CHANGED.format(model=model_value))
+    await msg.reply_text(strings.MODEL_CHANGED.format(model=model_value))
 
 
 @authorized
@@ -233,10 +226,10 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     msg = require_message(update)
     chat_id = require_chat(update).id
     container = _get_container(context)
-    S = get_strings()
+    strings = get_strings()
 
     if not container.prompt_service.is_running(chat_id):
-        await msg.reply_text(S.CANCEL_NO_PROMPT)
+        await msg.reply_text(strings.CANCEL_NO_PROMPT)
         return
 
     cancelled = container.prompt_service.cancel(chat_id)
@@ -248,9 +241,9 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "chat_id_masked": mask_chat_id(chat_id),
             },
         )
-        await msg.reply_text(S.CANCEL_DONE)
+        await msg.reply_text(strings.CANCEL_DONE)
     else:
-        await msg.reply_text(S.CANCEL_NO_PROMPT)
+        await msg.reply_text(strings.CANCEL_NO_PROMPT)
 
 
 @authorized
@@ -259,11 +252,11 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     msg = require_message(update)
     chat_id = require_chat(update).id
     container = _get_container(context)
-    S = get_strings()
+    strings = get_strings()
 
     prompt = " ".join(cast(list[str], context.args))
     if not prompt:
-        await msg.reply_text(S.OPEN_USAGE)
+        await msg.reply_text(strings.OPEN_USAGE)
         return
 
     try:
@@ -273,7 +266,7 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             view=TelegramChatView(container.message_sender, chat_id),
         )
     except PromptAlreadyRunningError:
-        await msg.reply_text(S.OPEN_BUSY)
+        await msg.reply_text(strings.OPEN_BUSY)
 
 
 @authorized
@@ -283,34 +276,34 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     args = context.args
     container = _get_container(context)
     store = container.session_store
-    from config import DEFAULT_MODEL, OPENCODE_TIMEOUT, OPENCODE_WORKDIR
-    S = get_strings()
-    
+    from config import OPENCODE_TIMEOUT, OPENCODE_WORKDIR
+    strings = get_strings()
+
     if not args:
         settings = await store.get_all_chat_settings(chat_id)
         model = settings.get("model", DEFAULT_MODEL)
         timeout = settings.get("timeout", OPENCODE_TIMEOUT)
         workdir = settings.get("workdir", OPENCODE_WORKDIR)
         provider = settings.get("provider", "opencode")
-        lines = [S.CONFIG_HEADER + "\n"]
+        lines = [strings.CONFIG_HEADER + "\n"]
         lines.append(f"  modelo: `{model}`")
         lines.append(f"  timeout: `{timeout}s`")
         lines.append(f"  workdir: `{workdir}`")
         lines.append(f"  provider: `{provider}`")
         await msg.reply_text("\n".join(lines))
         return
-    
+
     key = args[0].lower()
     if key not in ("model", "timeout", "workdir", "provider"):
-        await msg.reply_text(S.CONFIG_UNKNOWN_KEY.format(key=key))
+        await msg.reply_text(strings.CONFIG_UNKNOWN_KEY.format(key=key))
         return
-    
+
     if len(args) < 2:
         default_map = {"model": DEFAULT_MODEL, "timeout": OPENCODE_TIMEOUT, "workdir": OPENCODE_WORKDIR, "provider": "opencode"}
         value = await store.get_chat_setting(chat_id, key, default_map[key])
         await msg.reply_text(f"{key} = `{value}`")
         return
-    
+
     value = args[1]
     if key == "model":
         from config import resolve_model
@@ -319,28 +312,28 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             value = int(value)
         except ValueError:
-            await msg.reply_text(S.CONFIG_INVALID_TIMEOUT)
+            await msg.reply_text(strings.CONFIG_INVALID_TIMEOUT)
             return
         await store.set_chat_setting(chat_id, key, value)
-        await msg.reply_text(S.CONFIG_TIMEOUT_SET.format(value=value))
+        await msg.reply_text(strings.CONFIG_TIMEOUT_SET.format(value=value))
         return
-    
+
     await store.set_chat_setting(chat_id, key, value)
-    await msg.reply_text(S.CONFIG_SET.format(key=key, value=value))
+    await msg.reply_text(strings.CONFIG_SET.format(key=key, value=value))
 
 
 @authorized
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Health check: /health — versión, uptime, conectividad, sesiones."""
-    import sys
     import re
+    import sys
     from pathlib import Path
-    
+
     container = _get_container(context)
     chat_id = require_chat(update).id
     sender = container.message_sender
     store = container.session_store
-    
+
     # Version from pyproject.toml
     try:
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
@@ -354,12 +347,12 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             level=logging.DEBUG,
         )
         version = "?"
-    
+
     # Uptime
     uptime_s = int(time.time() - container.start_time)
     h, m = divmod(uptime_s, 3600)
     m, s = divmod(m, 60)
-    
+
     # Connectivity
     try:
         me = await container.bot_port.get_me()
@@ -374,7 +367,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         bot_user = "?"
         connected = "❌ Sin conexión"
-    
+
     # OpenCode sessions
     try:
         from persistence.sessions import fetch_opencode_sessions
@@ -387,12 +380,12 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             level=logging.DEBUG,
         )
         oc_count = "?"
-    
+
     # Per-chat info
     settings = await store.get_all_chat_settings(chat_id)
     workdir = settings.get("workdir", "default")
     model = await store.get_model(chat_id)
-    
+
     lines = [
         "🩺 *Health Check*\n",
         f"📦 v{version}",

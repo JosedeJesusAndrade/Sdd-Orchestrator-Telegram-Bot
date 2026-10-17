@@ -4,6 +4,7 @@ All bot dependencies in one dataclass. Immutable after construction.
 Injected via PTB's context.application.bot_data["container"].
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 

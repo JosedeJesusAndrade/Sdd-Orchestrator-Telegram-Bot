@@ -1,5 +1,5 @@
 """Message handlers: text prompts and voice messages.
-  
+
 Architecture change (Week 2→3):
   All handlers now access services via AppContainer from PTB context
   instead of lazy-importing the bot module.
@@ -19,16 +19,16 @@ from datetime import timedelta
 from typing import cast
 
 from telegram import Update
-from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
 
-from config import OPENAI_API_KEY, CONTAINER_KEY
-from utils.logging import get_module_logger, log_exception, mask_chat_id
+from config import CONTAINER_KEY, OPENAI_API_KEY
 from handlers import authorized
 from handlers._guards import require_chat, require_message, require_text
+from services.container import AppContainer
 from services.prompt_service import PromptAlreadyRunningError
 from services.telegram_chat_view import TelegramChatView
-from services.container import AppContainer
+from utils.logging import get_module_logger, log_exception, mask_chat_id
 
 logger = get_module_logger(__name__)
 

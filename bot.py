@@ -7,58 +7,67 @@ and enhanced session status (/status).
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
 import sys
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import nest_asyncio
-
-from datetime import datetime, timezone
-
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
-    CommandHandler,
     filters,
 )
 
 from config import (
-    BASE_DIR, BOT_TOKEN, ALLOWED_CHAT_IDS,
-    DEFAULT_MODEL, CONTAINER_KEY,
-    OPENCODE_WORKDIR, OPENCODE_TIMEOUT,
-    OPENAI_API_KEY, OPENCODE_CMD,
+    ALLOWED_CHAT_IDS,
+    BOT_TOKEN,
+    CONNECTIVITY_CHECK_INTERVAL,
+    CONNECTIVITY_FIRST_CHECK_DELAY,
+    CONTAINER_KEY,
+    DEFAULT_MODEL,
+    OPENAI_API_KEY,
+    OPENCODE_CMD,
+    OPENCODE_TIMEOUT,
+    OPENCODE_WORKDIR,
     SESSIONS_PATH,
-    CONNECTIVITY_CHECK_INTERVAL, CONNECTIVITY_FIRST_CHECK_DELAY,
 )
-from persistence.sessions import fetch_opencode_sessions
+from handlers.admin import session_preview_command, test_md_command
+from handlers.ci import pr_command, update_command, wdir_command
+from handlers.commands import (
+    cancel_command,
+    config_command,
+    health_command,
+    help_command,
+    model_command,
+    new_command,
+    open_command,
+    start_command,
+    status_command,
+)
+from handlers.messages import handle_message, handle_voice
+from handlers.sessions import session_command
 from opencode.client import query_opencode_db
-from services.session_store import SessionStore
-from services.message_sender import MessageSender
-from services.prompt_service import PromptService
-from services.opencode_cli_backend import OpenCodeCLIBackend
-from services.telegram_adapter import TelegramAdapter
+from persistence.sessions import fetch_opencode_sessions
 from services.ai_provider_factory import AIProviderFactory
 from services.container import AppContainer
+from services.message_sender import MessageSender
+from services.opencode_cli_backend import OpenCodeCLIBackend
+from services.prompt_service import PromptService
+from services.session_store import SessionStore
+from services.telegram_adapter import TelegramAdapter
 from utils.logging import get_module_logger, log_exception
 
 # Literal "bot" (not __name__): this module runs as "__main__", which would
 # produce the unhelpful logger name "opencode_bot.__main__".
 logger = get_module_logger("bot")
-
-from handlers.messages import handle_message, handle_voice
-from handlers.commands import (
-    start_command, help_command, status_command,
-    model_command, cancel_command, new_command, open_command, config_command,
-    health_command,
-)
-from handlers.sessions import session_command
-from handlers.admin import test_md_command, session_preview_command
-from handlers.ci import pr_command, update_command, wdir_command
 
 
 # ── Connection state tracking ──────────────────────────────────────────
@@ -75,7 +84,7 @@ class ConnectionState:
         self._consecutive_failures += 1
         if self._connected:
             self._connected = False
-            self._first_failure_at = datetime.now(timezone.utc)
+            self._first_failure_at = datetime.now(UTC)
             logger.warning(
                 "=" * 55
             )
@@ -98,7 +107,7 @@ class ConnectionState:
         elif self._consecutive_failures % 10 == 0:
             elapsed = ""
             if self._first_failure_at:
-                delta = datetime.now(timezone.utc) - self._first_failure_at
+                delta = datetime.now(UTC) - self._first_failure_at
                 mins = int(delta.total_seconds() // 60)
                 elapsed = f" (~{mins} min sin conexión)"
             logger.info(
@@ -111,13 +120,10 @@ class ConnectionState:
         if not self._connected:
             elapsed = ""
             if self._first_failure_at:
-                delta = datetime.now(timezone.utc) - self._first_failure_at
+                delta = datetime.now(UTC) - self._first_failure_at
                 mins = int(delta.total_seconds() // 60)
                 secs = int(delta.total_seconds() % 60)
-                if mins > 0:
-                    elapsed = f" (tras {mins} min {secs} s)"
-                else:
-                    elapsed = f" (tras {secs} s)"
+                elapsed = f" (tras {mins} min {secs} s)" if mins > 0 else f" (tras {secs} s)"
             logger.warning(
                 "=" * 55
             )
@@ -125,7 +131,7 @@ class ConnectionState:
                 f"  ✅ CONEXIÓN RESTABLECIDA{elapsed}"
             )
             logger.warning(
-                f"  El bot sigue funcionando normalmente."
+                "  El bot sigue funcionando normalmente."
             )
             logger.warning(
                 "=" * 55
@@ -435,13 +441,11 @@ async def run_bot() -> None:
     logger.info("Shutting down gracefully...")
     # Cancel connectivity monitor task
     connectivity_task.cancel()
-    try:
+    # connectivity_task was cancelled during graceful shutdown (SIGINT/
+    # SIGTERM); awaiting it only surfaces the cancellation — silence is
+    # correct, it is not an error.
+    with contextlib.suppress(asyncio.CancelledError):
         await connectivity_task
-    except asyncio.CancelledError:
-        # connectivity_task was cancelled during graceful shutdown (SIGINT/
-        # SIGTERM); awaiting it only surfaces the cancellation — silence is
-        # correct, it is not an error.
-        pass
     assert app.updater is not None
     await app.updater.stop()
     await app.stop()

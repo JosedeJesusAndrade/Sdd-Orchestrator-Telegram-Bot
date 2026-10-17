@@ -1,5 +1,5 @@
 """PromptService: execute OpenCode prompts, manage output, track state.
-  
+
 Architecture rationale:
   The old _process_prompt() was a 273-line monolithic function inside
   handlers/messages.py. It handled:
@@ -34,15 +34,15 @@ Architecture rationale:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from config import (
-    DEFAULT_MODEL, DEFAULT_SESSION_NAME,
-    OPENCODE_TIMEOUT, OPENCODE_WORKDIR,
+    OPENCODE_TIMEOUT,
+    OPENCODE_WORKDIR,
     PROGRESS_UPDATE_INTERVAL,
 )
 from utils.logging import get_module_logger, log_exception
@@ -50,8 +50,8 @@ from utils.logging import get_module_logger, log_exception
 if TYPE_CHECKING:
     from services.ai_backend import AIBackend
     from services.ai_provider_factory import ProviderFactoryPort
-    from services.session_store import SessionInfo, SessionStorePort
     from services.chat_view import ChatView, ConversationId, ProgressHandle
+    from services.session_store import SessionInfo, SessionStorePort
 
 logger = get_module_logger(__name__)
 
@@ -305,7 +305,7 @@ class PromptService:
         session: SessionInfo | None,
     ) -> None:
         """Format and send the OpenCode response, or show an error."""
-        from formatting.markdown import clean_opencode_output, _assemble_response
+        from formatting.markdown import _assemble_response, clean_opencode_output
 
         # Handle cancellation
         if result["cancelled"]:
@@ -454,12 +454,10 @@ class PromptService:
         ``update()`` can never overwrite "⏹️ Cancelado." / "✅ Completado.".
         """
         progress_task.cancel()
-        try:
+        # Cancelled by us on purpose — collecting the CancelledError is
+        # expected, not an error.
+        with contextlib.suppress(asyncio.CancelledError):
             await progress_task
-        except asyncio.CancelledError:
-            # Cancelled by us on purpose — collecting the CancelledError is
-            # expected, not an error.
-            pass
 
     async def _update_progress(self, handle: ProgressHandle) -> None:
         start = time.monotonic()

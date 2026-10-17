@@ -16,6 +16,74 @@ class OpenCodeDBError(RuntimeError):
     """Raised by ``query_opencode_db`` when a caller opts into hard failures."""
 
 
+def _normalize_sql(sql: str) -> str:
+    """Flatten multi-line SQL so the CLI can receive it as one argv element.
+
+    On Windows ``OPENCODE_CMD`` usually resolves to ``opencode.CMD``, which
+    forwards its arguments through ``cmd.exe``. ``cmd.exe`` truncates an
+    argument at the first newline, so multi-line SQL reaches SQLite cut in half
+    and fails with "incomplete input". Whitespace inside single-quoted literals
+    is preserved verbatim (``''`` is treated as an escaped quote), and line /
+    block comments are dropped because collapsing a ``--`` comment into one line
+    would swallow the rest of the statement.
+    """
+    if "\n" not in sql and "\r" not in sql:
+        return sql
+
+    parts: list[str] = []
+    pending_space = False
+    in_string = False
+    index = 0
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+
+        if in_string:
+            parts.append(char)
+            if char == "'":
+                if index + 1 < length and sql[index + 1] == "'":
+                    parts.append("'")
+                    index += 2
+                    continue
+                in_string = False
+            index += 1
+            continue
+
+        if char == "'":
+            if pending_space and parts:
+                parts.append(" ")
+            pending_space = False
+            in_string = True
+            parts.append(char)
+            index += 1
+            continue
+
+        if char == "-" and index + 1 < length and sql[index + 1] == "-":
+            newline = sql.find("\n", index + 2)
+            index = length if newline == -1 else newline
+            pending_space = True
+            continue
+
+        if char == "/" and index + 1 < length and sql[index + 1] == "*":
+            comment_end = sql.find("*/", index + 2)
+            index = length if comment_end == -1 else comment_end + 2
+            pending_space = True
+            continue
+
+        if char.isspace():
+            pending_space = True
+            index += 1
+            continue
+
+        if pending_space and parts:
+            parts.append(" ")
+        pending_space = False
+        parts.append(char)
+        index += 1
+
+    return "".join(parts)
+
+
 async def query_opencode_db(
     sql: str,
     allowed_pattern: str | None = None,
@@ -26,8 +94,10 @@ async def query_opencode_db(
     """Execute a SQL query against opencode.db via CLI. Returns list of dicts.
 
     Args:
-        sql: The SQL to execute. The CLI has no parameter binding, so callers
-            that interpolate untrusted values MUST validate/escape them first.
+        sql: The SQL to execute. It is flattened to a single line before being
+            handed to the CLI (see :func:`_normalize_sql`). The CLI has no
+            parameter binding, so callers that interpolate untrusted values MUST
+            validate/escape them first.
         allowed_pattern: Optional guard applied to the identifier in
             ``WHERE <ident> = '<word>'``. It cannot understand aliased
             predicates; new callers should validate locally instead.
@@ -38,6 +108,7 @@ async def query_opencode_db(
             ``INTERNAL_SUBPROCESS_TIMEOUT``.
     """
     effective_timeout = INTERNAL_SUBPROCESS_TIMEOUT if timeout is None else timeout
+    sql = _normalize_sql(sql)
     if allowed_pattern:
         match = re.search(r'WHERE\s+(\w+)\s*=\s*[\'"](\w+)[\'"]', sql)
         if match:

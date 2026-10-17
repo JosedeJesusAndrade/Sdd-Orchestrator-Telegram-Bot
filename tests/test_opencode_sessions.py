@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from opencode.client import OpenCodeDBError
+from opencode.client import OpenCodeDBError, _normalize_sql, query_opencode_db
 from opencode.sessions import (
     HISTORY_QUERY_TIMEOUT,
     OpenCodeSessions,
@@ -524,6 +524,53 @@ def test_rows_to_messages_skips_blank_text() -> None:
 
     assert [message.id for message in messages] == ["m1"]
     assert messages[0].text == "ok"
+
+
+# ── SQL normalization (CLI transport) ──────────────────────────────────
+
+
+def test_normalize_sql_flattens_whitespace_outside_literals() -> None:
+    sql = "SELECT 1,\n    'a  b',\n    'it''s'\n-- trailing comment\nFROM t /* block */"
+
+    assert _normalize_sql(sql) == "SELECT 1, 'a  b', 'it''s' FROM t"
+
+
+def test_messages_sql_has_no_comment_placeholder_and_normalizes_to_one_line() -> None:
+    sql = _build_messages_sql("ses_root1", 50)
+    normalized = _normalize_sql(sql)
+
+    assert "/*" not in sql
+    assert "m.time_created <" not in sql
+    assert "\n" not in normalized
+    assert _build_messages_sql("ses_root1", 50, before=400).count("/*") == 0
+
+    with_before = _normalize_sql(_build_messages_sql("ses_root1", 50, before=400))
+    assert "\n" not in with_before
+    assert "m.time_created < 400" in with_before
+
+
+def test_normalized_messages_sql_still_parses_against_sqlite(db: sqlite3.Connection) -> None:
+    rows = _execute(db, _normalize_sql(_build_messages_sql("ses_root1", 50)))
+
+    assert [row["message_id"] for row in rows] == ["msg_a", "msg_b", "msg_b", "msg_d"]
+
+
+async def test_query_opencode_db_sends_single_line_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr("opencode.client.subprocess.run", fake_run)
+
+    await query_opencode_db("SELECT 1,\n  'a  b'\nFROM t")
+
+    sent = captured["argv"][2]
+    assert sent == "SELECT 1, 'a  b' FROM t"
+    assert "\n" not in sent
 
 
 def test_opencode_sessions_module_is_ptb_free() -> None:

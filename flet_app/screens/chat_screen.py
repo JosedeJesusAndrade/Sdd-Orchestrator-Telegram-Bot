@@ -111,7 +111,17 @@ def build_chat_screen(*, model: str, workdir: str) -> ChatScreen:
                     gradient=DS.gradients.blue_glow(),
                     ignore_interactions=True,
                 ),
-                body,
+                # ``SafeArea`` keeps the chrome below the notch/status bar on a
+                # real APK. The Flet viewer reports no intrusions, so the top
+                # bar also carries a small explicit top padding (top_bar.py).
+                ft.SafeArea(
+                    content=body,
+                    expand=True,
+                    avoid_intrusions_top=True,
+                    avoid_intrusions_bottom=True,
+                    avoid_intrusions_left=False,
+                    avoid_intrusions_right=False,
+                ),
             ],
         ),
     )

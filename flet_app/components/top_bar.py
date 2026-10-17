@@ -107,8 +107,16 @@ def build_top_bar(model: str) -> TopBar:
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
+    # Slightly more top air than the Slice 1 symmetric ``md`` (12 -> 13, ~10%)
+    # so the bar clears the Android status bar even without an inset.
+    vertical = DS.spacing.md + DS.spacing.xs // 4
     control = ft.Container(
         content=row,
-        padding=ft.Padding.symmetric(horizontal=DS.spacing.xl, vertical=DS.spacing.md),
+        padding=ft.Padding.only(
+            left=DS.spacing.xl,
+            right=DS.spacing.xl,
+            top=vertical,
+            bottom=DS.spacing.md,
+        ),
     )
     return TopBar(control=control, model_text=model_text)

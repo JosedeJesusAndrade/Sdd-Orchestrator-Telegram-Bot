@@ -18,8 +18,10 @@ class Colors:
     """DeepSeek-inspired palette with a subtle lavender complement."""
 
     background: str = "#0A0A0A"
-    gradient_mid: str = "#0B1226"
-    gradient_end: str = "#1A1030"
+    # Mid/end stops sit ~20% closer to ``background`` than the Slice 1 values
+    # (#0B1226 / #1A1030): the gradient stays perceptible but quieter.
+    gradient_mid: str = "#0B1020"
+    gradient_end: str = "#170F28"
     accent: str = "#4D6BFE"
     accent_soft: str = "#A78BFA"
     surface: str = "#16161A"

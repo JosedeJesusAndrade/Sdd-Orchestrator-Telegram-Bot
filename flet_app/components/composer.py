@@ -7,12 +7,19 @@ a deliberately muted tone.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import flet as ft
 
 from flet_app.core.design_system import DS
+
+# Number of trailing path segments kept in the muted workdir caption. Two is
+# enough to recognize the project (`…\python\Sdd-Orchestrator-Telegram-Bot`)
+# while fitting comfortably on a phone.
+_MAX_WORKDIR_SEGMENTS = 2
 
 SendHandler = Callable[
     [ft.Event[ft.TextField] | ft.Event[ft.Container] | None],
@@ -37,6 +44,19 @@ class Composer:
         """Dim and disable the send action while a prompt is running."""
         self.send_button.disabled = busy
         self.send_button.opacity = 0.55 if busy else 1.0
+
+
+def shorten_workdir(workdir: str) -> str:
+    """Keep only the trailing path segments, the part users care about.
+
+    Flet's ``TextOverflow.ELLIPSIS`` truncates the *end* of the string, which
+    hides the project name on a long Windows path. Truncating the *front*
+    instead guarantees the active directory stays readable on a phone.
+    """
+    parts = Path(workdir).parts
+    if len(parts) <= _MAX_WORKDIR_SEGMENTS + 1:
+        return workdir
+    return f"…{os.sep}{os.sep.join(parts[-_MAX_WORKDIR_SEGMENTS:])}"
 
 
 def build_composer(*, workdir: str) -> Composer:
@@ -104,7 +124,7 @@ def build_composer(*, workdir: str) -> Composer:
     )
 
     workdir_text = ft.Text(
-        value=workdir,
+        value=shorten_workdir(workdir),
         size=DS.typography.muted_size,
         color=DS.colors.text_muted,
         text_align=ft.TextAlign.CENTER,
@@ -115,6 +135,7 @@ def build_composer(*, workdir: str) -> Composer:
         content=workdir_text,
         alignment=ft.Alignment.CENTER,
         padding=ft.Padding.only(top=DS.spacing.sm),
+        tooltip=workdir,
     )
 
     control = ft.Container(

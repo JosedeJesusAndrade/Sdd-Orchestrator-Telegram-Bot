@@ -24,33 +24,12 @@ def greeting_text() -> str:
 
 
 def build_greeting() -> ft.Container:
-    """Logo mark + large light greeting, centered in the free space."""
-    mark = ft.Container(
-        width=64,
-        height=64,
-        border_radius=20,
-        gradient=ft.LinearGradient(
-            begin=ft.Alignment.TOP_LEFT,
-            end=ft.Alignment.BOTTOM_RIGHT,
-            colors=[DS.colors.accent_soft, DS.colors.accent],
-        ),
-        alignment=ft.Alignment.CENTER,
-        shadow=ft.BoxShadow(
-            blur_radius=32,
-            color=DS.colors.alpha(DS.colors.accent_soft, 0.35),
-        ),
-        content=ft.Icon(ft.Icons.AUTO_AWESOME, size=30, color=DS.colors.white),
-    )
+    """Large light greeting, centered cleanly in the free space.
 
-    halo = ft.Container(
-        width=220,
-        height=220,
-        border_radius=110,
-        gradient=DS.gradients.lavender_glow(),
-        alignment=ft.Alignment.CENTER,
-        content=mark,
-    )
-
+    The logo mark that stood above the copy was removed per design feedback:
+    the greeting now carries the empty state on its own, with the page-level
+    lavender glow providing the only purple accent.
+    """
     text = ft.Text(
         value=greeting_text(),
         size=DS.typography.greeting_size,
@@ -62,15 +41,8 @@ def build_greeting() -> ft.Container:
     return ft.Container(
         expand=True,
         alignment=ft.Alignment.CENTER,
-        content=ft.Column(
-            controls=[
-                halo,
-                ft.Container(
-                    content=text,
-                    padding=ft.Padding.symmetric(horizontal=DS.spacing.xl),
-                ),
-            ],
-            spacing=DS.spacing.lg,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        content=ft.Container(
+            content=text,
+            padding=ft.Padding.symmetric(horizontal=DS.spacing.xl),
         ),
     )

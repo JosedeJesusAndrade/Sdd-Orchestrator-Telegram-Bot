@@ -28,3 +28,6 @@ sessions.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local design references
+examples/

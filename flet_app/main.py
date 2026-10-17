@@ -23,7 +23,7 @@ if __package__ in (None, ""):
 
 import flet as ft  # noqa: E402
 
-from config import DEFAULT_MODEL, OPENCODE_WORKDIR  # noqa: E402
+from config import BASE_DIR, DEFAULT_MODEL  # noqa: E402
 from flet_app.core.design_system import DS  # noqa: E402
 from flet_app.flet_chat_view import FletChatView  # noqa: E402
 from flet_app.screens.chat_screen import build_chat_screen  # noqa: E402
@@ -46,11 +46,22 @@ async def main(page: ft.Page) -> None:
     gate = AllowAllGate()
 
     model = DEFAULT_MODEL
-    workdir = OPENCODE_WORKDIR
+    workdir = str(BASE_DIR)
     try:
         settings = await core.settings_service.get(CONVERSATION_ID)
         model = settings.model
         workdir = str(settings.workdir)
+
+        # The Flet GUI is the front-end of THIS repository. ``OPENCODE_WORKDIR``
+        # (.env) belongs to the Telegram bot and may point at a parent folder
+        # (e.g. ``...\mono\python``), which is why the caption looked "cut".
+        # When the Flet conversation has no explicit workdir, bind it to the
+        # project root so the caption and the prompts agree on the relevant
+        # directory. Telegram conversations are untouched (separate ids).
+        explicit = await core.session_store.get_all_chat_settings(CONVERSATION_ID)
+        if "workdir" not in explicit:
+            workdir = str(BASE_DIR)
+            await core.settings_service.set(CONVERSATION_ID, "workdir", workdir)
     except Exception:
         logger.exception("No se pudieron leer los settings; usando defaults")
 

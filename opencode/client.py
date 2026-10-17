@@ -12,8 +12,32 @@ from utils.logging import get_module_logger
 logger = get_module_logger(__name__)
 
 
-async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> list[dict[str, Any]]:
-    """Execute a SQL query against opencode.db via CLI. Returns list of dicts."""
+class OpenCodeDBError(RuntimeError):
+    """Raised by ``query_opencode_db`` when a caller opts into hard failures."""
+
+
+async def query_opencode_db(
+    sql: str,
+    allowed_pattern: str | None = None,
+    *,
+    raise_on_error: bool = False,
+    timeout: float | None = None,
+) -> list[dict[str, Any]]:
+    """Execute a SQL query against opencode.db via CLI. Returns list of dicts.
+
+    Args:
+        sql: The SQL to execute. The CLI has no parameter binding, so callers
+            that interpolate untrusted values MUST validate/escape them first.
+        allowed_pattern: Optional guard applied to the identifier in
+            ``WHERE <ident> = '<word>'``. It cannot understand aliased
+            predicates; new callers should validate locally instead.
+        raise_on_error: When true, failures raise ``OpenCodeDBError`` instead of
+            logging and returning an empty list. Default preserves the historic
+            best-effort behavior.
+        timeout: Per-call subprocess timeout in seconds. ``None`` uses
+            ``INTERNAL_SUBPROCESS_TIMEOUT``.
+    """
+    effective_timeout = INTERNAL_SUBPROCESS_TIMEOUT if timeout is None else timeout
     if allowed_pattern:
         match = re.search(r'WHERE\s+(\w+)\s*=\s*[\'"](\w+)[\'"]', sql)
         if match:
@@ -26,6 +50,8 @@ async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> lis
                         "sql_preview": sql[:100].replace("\n", " "),
                     },
                 )
+                if raise_on_error:
+                    raise OpenCodeDBError("Blocked unsafe SQL query")
                 return []
     try:
         loop = asyncio.get_running_loop()
@@ -36,7 +62,7 @@ async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> lis
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=INTERNAL_SUBPROCESS_TIMEOUT,
+                timeout=effective_timeout,
             ),
         )
         if result.returncode != 0:
@@ -48,8 +74,15 @@ async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> lis
                     "stderr": result.stderr.strip()[:100],
                 },
             )
+            if raise_on_error:
+                raise OpenCodeDBError(
+                    f"DB query failed with returncode {result.returncode}: "
+                    f"{result.stderr.strip()[:200]}"
+                )
             return []
         return json.loads(result.stdout) if result.stdout.strip() else []
+    except OpenCodeDBError:
+        raise
     except Exception as e:
         logger.warning(
             "DB query error",
@@ -59,4 +92,6 @@ async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> lis
             },
             exc_info=True,
         )
+        if raise_on_error:
+            raise OpenCodeDBError(f"DB query error ({type(e).__name__}): {e}") from e
         return []

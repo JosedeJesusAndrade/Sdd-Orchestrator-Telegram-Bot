@@ -32,9 +32,16 @@ class ChatScreen:
         self.top_bar.set_model(model)
 
     def reveal_conversation(self) -> None:
-        """Swap the greeting for the conversation on the first message."""
+        """Hide the greeting overlay on the first message.
+
+        The conversation column is mounted VISIBLE from the very first frame
+        (see ``build_chat_screen``); only the greeting overlay is hidden here.
+        Toggling the conversation from ``visible=False`` to ``True`` in the
+        same patch that appended the first message left some clients with a
+        subtree that never rendered. Keeping it always visible removes that
+        failure mode entirely.
+        """
         self.greeting.visible = False
-        self.conversation_holder.visible = True
 
 
 def build_chat_screen(*, model: str, workdir: str) -> ChatScreen:
@@ -53,12 +60,22 @@ def build_chat_screen(*, model: str, workdir: str) -> ChatScreen:
     conversation_holder = ft.Container(
         content=conversation,
         expand=True,
-        visible=False,
         padding=ft.Padding.only(
             left=DS.spacing.xl,
             right=DS.spacing.xl,
             top=DS.spacing.sm,
         ),
+    )
+
+    # The conversation is NOT hidden at mount: a control tree that is created
+    # with ``visible=False`` and revealed later (in the same patch that adds
+    # its first child) can fail to build that child on the client. Mount the
+    # scrollable column visible from frame one and let the greeting sit on top
+    # of it; the first message only hides the greeting.
+    conversation_area = ft.Stack(
+        expand=True,
+        fit=ft.StackFit.EXPAND,
+        controls=[conversation_holder, greeting],
     )
 
     composer_holder = ft.Container(
@@ -80,7 +97,7 @@ def build_chat_screen(*, model: str, workdir: str) -> ChatScreen:
     )
 
     body = ft.Column(
-        controls=[top_bar.control, greeting, conversation_holder, composer_holder],
+        controls=[top_bar.control, conversation_area, composer_holder],
         expand=True,
         spacing=0,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,

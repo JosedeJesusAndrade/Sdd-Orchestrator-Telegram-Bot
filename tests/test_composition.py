@@ -20,10 +20,13 @@ from pathlib import Path
 
 import pytest
 
+from opencode.sessions import OpenCodeSessions
 from services.ai_provider_factory import AIProviderFactory
 from services.composition import CoreStack, build_prompt_stack
+from services.conversations_service import ConversationsService
 from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.prompt_service import PromptService
+from services.session_service import SessionService
 from services.session_store import SessionStore
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +42,9 @@ def test_build_prompt_stack_returns_core_stack(tmp_path: Path) -> None:
     assert isinstance(core.session_store, SessionStore)
     assert isinstance(core.provider_factory, AIProviderFactory)
     assert isinstance(core.prompt_service, PromptService)
+    assert isinstance(core.session_service, SessionService)
+    assert isinstance(core.agent_sessions, OpenCodeSessions)
+    assert isinstance(core.conversations_service, ConversationsService)
     assert isinstance(core.start_time, float)
 
 
@@ -56,6 +62,35 @@ def test_core_stack_is_frozen(tmp_path: Path) -> None:
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         core.__setattr__("start_time", 0.0)
+
+
+def test_session_service_gets_the_history_catalog(tmp_path: Path) -> None:
+    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
+
+    catalog = core.session_service._catalog
+    assert isinstance(catalog, OpenCodeSessions)
+    assert isinstance(core.agent_sessions, OpenCodeSessions)
+    assert catalog is core.agent_sessions
+
+
+def test_conversations_service_shares_the_core_pieces(tmp_path: Path) -> None:
+    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
+
+    assert core.conversations_service._agent_sessions is core.agent_sessions
+    assert core.conversations_service._session_service is core.session_service
+    assert core.conversations_service._session_store is core.session_store
+
+
+def test_sessions_directory_is_injected(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        sessions_directory=project,
+    )
+
+    agent = core.agent_sessions
+    assert isinstance(agent, OpenCodeSessions)
+    assert agent._directory(None) == project.as_posix()
 
 
 # ── Provider registration (previously-untested coverage gap) ───────────

@@ -17,12 +17,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import (
+    BASE_DIR,
     OPENCODE_CMD,
     OPENCODE_TIMEOUT,
     OPENCODE_WORKDIR,
     SESSIONS_PATH,
 )
+from opencode.sessions import OpenCodeSessions
+from services.agent_sessions import AgentSessions
 from services.ai_provider_factory import AIProviderFactory
+from services.conversations_service import ConversationsService
 from services.health_service import HealthService
 from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.prompt_service import PromptService
@@ -47,6 +51,8 @@ class CoreStack:
     health_service: HealthService
     session_service: SessionService
     settings_service: SettingsService
+    agent_sessions: AgentSessions
+    conversations_service: ConversationsService
     start_time: float
 
 
@@ -57,6 +63,7 @@ def build_prompt_stack(
     opencode_cmd: str = OPENCODE_CMD,
     workdir: str = OPENCODE_WORKDIR,
     timeout: int = OPENCODE_TIMEOUT,
+    sessions_directory: str | Path = BASE_DIR,
     start_time: float | None = None,
 ) -> CoreStack:
     """Build the frontend-agnostic core graph.
@@ -84,13 +91,23 @@ def build_prompt_stack(
         provider_factory=provider_factory,
     )
 
+    agent_sessions = OpenCodeSessions(sessions_directory)
+    session_service = SessionService(session_store, catalog=agent_sessions)
+    conversations_service = ConversationsService(
+        agent_sessions,
+        session_service,
+        session_store,
+    )
+
     return CoreStack(
         session_store=session_store,
         provider_factory=provider_factory,
         prompt_service=prompt_service,
         status_service=StatusService(session_store, resolved_start_time),
         health_service=HealthService(session_store, resolved_start_time),
-        session_service=SessionService(session_store),
+        session_service=session_service,
         settings_service=SettingsService(session_store),
+        agent_sessions=agent_sessions,
+        conversations_service=conversations_service,
         start_time=resolved_start_time,
     )

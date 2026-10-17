@@ -23,6 +23,7 @@ class AIBackendResult:
     returncode: int = 0
     cancelled: bool = False
     timed_out: bool = False
+    session_id: str | None = None
 
 
 @runtime_checkable

@@ -282,6 +282,7 @@ class PromptService:
                 "stderr": "",
                 "returncode": 0,
                 "cancelled": True,
+                "session_id": None,
             }
 
         result = await backend.execute(
@@ -298,6 +299,7 @@ class PromptService:
             "stderr": result.stderr,
             "returncode": result.returncode,
             "cancelled": conversation_id in self._cancel or result.cancelled,
+            "session_id": result.session_id,
         }
 
     # ── Internal: response delivery ─────────────────────────────────
@@ -371,7 +373,9 @@ class PromptService:
             await handle.error(f"\u274c Error (c\u00f3digo {result['returncode']}).")
 
         # Capture session ID for new sessions
-        await self._capture_session_id(conversation_id, result["stdout"], session)
+        await self._capture_session_id(
+            conversation_id, result.get("session_id"), result["stdout"], session
+        )
 
         # Increment prompt count
         try:
@@ -390,19 +394,25 @@ class PromptService:
     async def _capture_session_id(
         self,
         conversation_id: ConversationId,
+        session_id: str | None,
         stdout: str,
         session: SessionInfo | None,
     ) -> None:
-        """Extract and persist the real OpenCode session ID from stdout.
+        """Persist the real OpenCode session ID so the next prompt continues it.
 
-        After the first prompt in a new session, OpenCode assigns a
-        real session ID (e.g., ses_AbCdEf123). We capture this so
-        subsequent prompts use --continue.
+        The primary source is ``AIBackendResult.session_id``, parsed from the
+        CLI's ``--format json`` events (the default format never printed the
+        ID). The stdout regex remains ONLY as a last-resort fallback for the
+        raw-stdout path (JSON version drift): the raw event lines still carry
+        ``"sessionID":"ses_..."`` even when the parser can't decode them.
         """
-        match = re.search(r"(ses_[a-zA-Z0-9]+)", stdout)
-        if not match:
+        real_id = session_id
+        if not real_id:
+            match = re.search(r"(ses_[a-zA-Z0-9]+)", stdout)
+            if match:
+                real_id = match.group(1)
+        if not real_id:
             return
-        real_id = match.group(1)
 
         active = await self._store.get_active_session(conversation_id)
         if active is not None and not active.real_id:

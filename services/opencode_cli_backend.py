@@ -10,15 +10,99 @@ Phase 2 logging: every subprocess execution emits structured events:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
 import time
+from typing import Any
 
 from services.ai_backend import AIBackendResult
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
+
+
+def _part_error_message(part: dict[str, Any]) -> str | None:
+    """Best-effort extraction of an ``error`` event's human message."""
+    error = part.get("error")
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        data = error.get("data")
+        if isinstance(data, dict):
+            data_message = data.get("message")
+            if isinstance(data_message, str):
+                return data_message
+        error_message = error.get("message")
+        if isinstance(error_message, str):
+            return error_message
+    message = part.get("message")
+    return message if isinstance(message, str) else None
+
+
+def _parse_json_output(raw_stdout: str) -> tuple[str, str | None]:
+    """Extract assistant text + sessionID from ``opencode run --format json``.
+
+    The CLI emits NDJSON: one JSON event per line. Each event carries the
+    top-level ``sessionID``; assistant text lives in ``part.text`` of
+    ``type == "text"`` events. The default (non-JSON) format prints each text
+    part followed by a newline, so the reconstruction joins parts with ``\\n``
+    and keeps one trailing newline.
+
+    Robustness: if the output is not valid NDJSON (CLI version drift), the
+    raw stdout is returned as the response text with ``session_id=None`` so
+    the caller still shows *something* instead of crashing.
+    """
+    if not raw_stdout.strip():
+        return "", None
+
+    texts: list[str] = []
+    error_texts: list[str] = []
+    session_id: str | None = None
+
+    try:
+        for line in raw_stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            event = json.loads(stripped)
+            if not isinstance(event, dict):
+                raise ValueError("event is not a JSON object")
+
+            event_session = event.get("sessionID")
+            if not session_id and isinstance(event_session, str) and event_session:
+                session_id = event_session
+
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+
+            part_session = part.get("sessionID")
+            if not session_id and isinstance(part_session, str) and part_session:
+                session_id = part_session
+
+            event_type = event.get("type")
+            if event_type == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+            elif event_type == "error":
+                message = _part_error_message(part)
+                if message:
+                    error_texts.append(message)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        logger.warning(
+            "Could not parse JSON output; falling back to raw stdout",
+            extra={"event": "json_output_parse_failed", "cmd": "opencode"},
+        )
+        return raw_stdout, None
+
+    if texts:
+        return "\n".join(texts) + "\n", session_id
+    if error_texts:
+        return "\n".join(error_texts) + "\n", session_id
+    return "", session_id
 
 
 class OpenCodeCLIBackend:
@@ -55,7 +139,7 @@ class OpenCodeCLIBackend:
                 so the log is truthful about what actually happened.
         """
         effective_timeout = timeout if timeout is not None else self._timeout
-        cmd_parts = [self._cmd, "run"]
+        cmd_parts = [self._cmd, "run", "--format", "json"]
         if model:
             cmd_parts.extend(["--model", model])
         if agent:
@@ -126,10 +210,14 @@ class OpenCodeCLIBackend:
                     },
                 )
 
+            raw_stdout = stdout.decode("utf-8", errors="replace") if stdout else ""
+            response_text, session_id = _parse_json_output(raw_stdout)
+
             return AIBackendResult(
-                stdout=stdout.decode("utf-8", errors="replace") if stdout else "",
+                stdout=response_text,
                 stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
                 returncode=returncode,
+                session_id=session_id,
             )
         except TimeoutError:
             elapsed = time.monotonic() - start_time

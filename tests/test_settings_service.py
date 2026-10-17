@@ -128,19 +128,38 @@ async def test_set_timeout_non_numeric_raises_and_does_not_persist(raw: str) -> 
     assert store.settings == {}
 
 
-async def test_set_timeout_negative_is_not_rejected_by_current_validation() -> None:
-    """Documents the current contract: only ``int()`` parsing is validated.
-
-    There is no range check, so a negative value is stored. Rejecting
-    negatives would be a production change (out of scope for this task).
-    """
+@pytest.mark.parametrize("raw", ["-5", "0"])
+async def test_set_timeout_non_positive_raises_and_does_not_persist(raw: str) -> None:
     store = FakeStore()
     service = _service(store)
 
-    value = await service.set(42, "timeout", "-5")
+    with pytest.raises(InvalidSettingValueError) as exc:
+        await service.set(42, "timeout", raw)
 
-    assert value == -5
-    assert store.settings["timeout"] == -5
+    assert exc.value.args == ("El timeout debe ser mayor que 0 segundos.",)
+    assert store.set_calls == []
+    assert store.settings == {}
+
+
+async def test_set_timeout_above_upper_bound_raises_and_does_not_persist() -> None:
+    store = FakeStore()
+    service = _service(store)
+
+    with pytest.raises(InvalidSettingValueError) as exc:
+        await service.set(42, "timeout", "999999")
+
+    assert exc.value.args == ("El timeout no puede superar los 86400 segundos (24 horas).",)
+    assert store.set_calls == []
+    assert store.settings == {}
+
+
+async def test_set_timeout_accepts_valid_values_at_bounds() -> None:
+    store = FakeStore()
+    service = _service(store)
+
+    assert await service.set(42, "timeout", "300") == 300
+    assert await service.set(42, "timeout", "86400") == 86400
+    assert store.settings["timeout"] == 86400
 
 
 async def test_set_unknown_key_raises_and_does_not_write() -> None:

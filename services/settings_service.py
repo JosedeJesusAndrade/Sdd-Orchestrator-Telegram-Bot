@@ -18,6 +18,12 @@ if TYPE_CHECKING:
 
 SETTINGS_KEYS: tuple[str, ...] = ("model", "timeout", "workdir", "provider")
 
+# 24 hours. ``asyncio.wait_for`` treats a timeout <= 0 as already expired
+# (every prompt fails instantly), so the lower bound must be strict. The upper
+# bound is a sanity cap: an interactive chat prompt should never legitimately
+# need to block for more than a day, and it rejects typos like ``999999``.
+_MAX_TIMEOUT_SECONDS = 86400
+
 _DEFAULTS: dict[str, Any] = {
     "model": DEFAULT_MODEL,
     "timeout": OPENCODE_TIMEOUT,
@@ -73,7 +79,7 @@ class SettingsService:
         """Validate and persist one setting, returning the stored value.
 
         ``model`` values go through alias resolution; ``timeout`` must be an
-        integer number of seconds.
+        integer number of seconds in ``(0, 86400]``.
 
         Raises:
             UnknownSettingError: if ``key`` is not supported.
@@ -89,6 +95,12 @@ class SettingsService:
                 value = int(raw_value)
             except ValueError as e:
                 raise InvalidSettingValueError(raw_value) from e
+            if value <= 0:
+                raise InvalidSettingValueError("El timeout debe ser mayor que 0 segundos.")
+            if value > _MAX_TIMEOUT_SECONDS:
+                raise InvalidSettingValueError(
+                    f"El timeout no puede superar los {_MAX_TIMEOUT_SECONDS} segundos (24 horas)."
+                )
         else:
             value = raw_value
 

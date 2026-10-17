@@ -23,24 +23,30 @@ from config import (
     SESSIONS_PATH,
 )
 from services.ai_provider_factory import AIProviderFactory
+from services.health_service import HealthService
 from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.prompt_service import PromptService
+from services.session_service import SessionService
 from services.session_store import SessionStore
+from services.settings_service import SettingsService
+from services.status_service import StatusService
 
 
 @dataclass(frozen=True)
 class CoreStack:
     """The shared core graph both frontends depend on.
 
-    PHASE A holds only what exists today. Phase B will ADD the
-    Status/Health/Session/Settings services to this frozen dataclass; the
-    Telegram-only payload (``MessageSender``/``AppContainer``/``BotPort``)
-    never enters here.
+    The Telegram-only payload (``MessageSender``/``AppContainer``/``BotPort``)
+    never enters here; the four ``*_service`` fields are PTB-free.
     """
 
     session_store: SessionStore
     provider_factory: AIProviderFactory
     prompt_service: PromptService
+    status_service: StatusService
+    health_service: HealthService
+    session_service: SessionService
+    settings_service: SettingsService
     start_time: float
 
 
@@ -62,6 +68,7 @@ def build_prompt_stack(
     ``start_time`` — both frontends therefore share uptime semantics.
     """
     session_store = SessionStore(Path(sessions_path))
+    resolved_start_time = time.time() if start_time is None else start_time
 
     provider_factory = AIProviderFactory(default_provider=default_provider)
     provider_factory.register(
@@ -81,5 +88,9 @@ def build_prompt_stack(
         session_store=session_store,
         provider_factory=provider_factory,
         prompt_service=prompt_service,
-        start_time=time.time() if start_time is None else start_time,
+        status_service=StatusService(session_store, resolved_start_time),
+        health_service=HealthService(session_store, resolved_start_time),
+        session_service=SessionService(session_store),
+        settings_service=SettingsService(session_store),
+        start_time=resolved_start_time,
     )

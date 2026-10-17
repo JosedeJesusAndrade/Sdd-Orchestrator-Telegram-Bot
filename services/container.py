@@ -12,9 +12,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from services.ai_provider_factory import AIProviderFactory
     from services.bot_port import BotPort
+    from services.health_service import HealthService
     from services.message_sender import MessageSender
     from services.prompt_service import PromptService
+    from services.session_service import SessionService
     from services.session_store import SessionStore
+    from services.settings_service import SettingsService
+    from services.status_service import StatusService
 
 
 @dataclass
@@ -25,6 +29,10 @@ class AppContainer:
     message_sender: MessageSender
     prompt_service: PromptService
     provider_factory: AIProviderFactory
+    status_service: StatusService
+    health_service: HealthService
+    session_service: SessionService
+    settings_service: SettingsService
     bot_port: BotPort
     start_time: float
     allowed_chat_ids: list[int]

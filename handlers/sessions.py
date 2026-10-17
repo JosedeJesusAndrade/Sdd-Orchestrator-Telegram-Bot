@@ -7,27 +7,20 @@ Architecture change (Week 2→3):
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import re
 from datetime import datetime
 from typing import cast
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import CONTAINER_KEY, DEFAULT_SESSION_NAME, INTERNAL_SUBPROCESS_TIMEOUT, OPENCODE_CMD
+from config import CONTAINER_KEY, DEFAULT_SESSION_NAME
 from handlers import authorized
 from handlers._guards import require_chat, require_message
 from locales import get_strings
-from opencode.client import query_opencode_db
-from persistence.sessions import (
-    fetch_opencode_sessions,
-    invalidate_opencode_sessions_cache,
-)
 from services.container import AppContainer
+from services.session_service import InvalidSessionNameError, SessionNotDiscoveredError
 from services.session_store import SessionExistsError, SessionNotFoundError
-from utils.logging import get_module_logger, log_exception, mask_chat_id
+from utils.logging import get_module_logger, mask_chat_id
 from utils.time_formatting import relative_time
 
 logger = get_module_logger(__name__)
@@ -49,15 +42,13 @@ async def _session_new(
         return
 
     try:
-        await container.session_store.create_session(chat_id, name)
+        await container.session_service.create(chat_id, name)
     except SessionExistsError:
         await msg.reply_text(
             strings.SESSION_EXISTS.format(name=name) + " "
             f"Usá /session switch {name} para cambiarte."
         )
         return
-
-    invalidate_opencode_sessions_cache()
 
     logger.info("Session '%s' created for %s", name, mask_chat_id(chat_id))
     await msg.reply_text(
@@ -70,25 +61,10 @@ async def _session_list(update: Update, chat_id: int, container: AppContainer) -
     """Show all sessions — bot-managed + OpenCode-discovered, unified."""
     msg = require_message(update)
     strings = get_strings()
-    from persistence.sessions import fetch_opencode_sessions
 
-    # 1. Bot-managed sessions (from SessionStore / sessions.json)
-    bot_sessions = await container.session_store.list_sessions(chat_id)
-    bot_ids = {s.real_id for s in bot_sessions if s.real_id}
-
-    # 2. OpenCode-discovered sessions (from CLI / SQLite)
-    try:
-        oc_sessions = await fetch_opencode_sessions()
-    except Exception:
-        log_exception(
-            "oc_sessions_fetch_failed",
-            module=__name__,
-            level=logging.DEBUG,
-        )
-        oc_sessions = []
-
-    # 3. Merge: OpenCode sessions not yet adopted
-    unadopted = [s for s in oc_sessions if s["id"] not in bot_ids]
+    snapshot = await container.session_service.list_with_discovered(chat_id)
+    bot_sessions = snapshot.sessions
+    unadopted = snapshot.unadopted
 
     if not bot_sessions and not unadopted:
         await msg.reply_text(
@@ -122,8 +98,8 @@ async def _session_list(update: Update, chat_id: int, container: AppContainer) -
         lines.append("\n\u26aa *Sesiones OpenCode no adoptadas:*")
         lines.append("_Usá /session adopt `<id>` `<nombre>` para adoptarlas._\n")
         for oc in unadopted:
-            sid = oc["id"]
-            title = oc.get("title", sid[:16])
+            sid = oc.id
+            title = oc.title
             lines.append(f"\u26aa `{title}`\n   `{sid}`")
 
     await msg.reply_text("\n".join(lines))
@@ -140,7 +116,7 @@ async def _session_switch(
         return
 
     try:
-        await container.session_store.switch_session(chat_id, name)
+        await container.session_service.switch(chat_id, name)
     except SessionNotFoundError:
         await msg.reply_text(
             strings.SESSION_NOT_FOUND.format(name=name) + "\n"
@@ -169,41 +145,10 @@ async def _session_delete(
         return
 
     try:
-        real_id = await container.session_store.delete_session(chat_id, name)
+        await container.session_service.delete(chat_id, name)
     except SessionNotFoundError:
         await msg.reply_text(strings.SESSION_NOT_FOUND.format(name=name))
         return
-
-    invalidate_opencode_sessions_cache()
-
-    # Clean up in OpenCode if it had a real ID
-    if real_id:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                OPENCODE_CMD,
-                "session",
-                "delete",
-                real_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=INTERNAL_SUBPROCESS_TIMEOUT)
-            logger.info(
-                "Deleted OpenCode session %s for chat %s",
-                real_id,
-                mask_chat_id(chat_id),
-            )
-        except Exception as e:
-            logger.warning(
-                "OpenCode session delete failed",
-                extra={
-                    "event": "oc_session_delete_failed",
-                    "real_id": real_id,
-                    "chat_id": chat_id,
-                    "error_type": type(e).__name__,
-                },
-                exc_info=True,
-            )
 
     await msg.reply_text(strings.SESSION_DELETED.format(name=name))
 
@@ -260,39 +205,21 @@ async def _session_info(
         f"    Prompts: {prompt_count}",
     ]
 
-    if oc_id and re.match(r"^[a-zA-Z0-9_]+$", oc_id):
-        try:
-            msg_rows = await query_opencode_db(
-                f"SELECT COUNT(*) as count FROM message WHERE session_id = '{oc_id}'",
-                allowed_pattern=r"^[a-zA-Z0-9_]+$",
+    enrichment = await container.session_service.enrich(oc_id)
+    if "message_count" in enrichment:
+        lines.append(
+            "    Mensajes en BD: {cnt}".format(
+                cnt=enrichment["message_count"],
             )
-            if msg_rows:
-                lines.append(
-                    "    Mensajes en BD: {cnt}".format(
-                        cnt=msg_rows[0].get("count", "?"),
-                    )
-                )
-
-            session_rows = await query_opencode_db(
-                f"SELECT created_at, model FROM session WHERE id = '{oc_id}'",
-                allowed_pattern=r"^[a-zA-Z0-9_]+$",
-            )
-            if session_rows:
-                row = session_rows[0]
-                if row.get("created_at"):
-                    lines.append(
-                        "    Creada (BD): {ca}".format(ca=row["created_at"]),
-                    )
-                if row.get("model"):
-                    lines.append(
-                        "    Modelo (BD): {m}".format(m=row["model"]),
-                    )
-        except Exception:
-            log_exception(
-                "oc_db_enrich_failed",
-                module=__name__,
-                level=logging.DEBUG,
-            )
+        )
+    if "created_at" in enrichment:
+        lines.append(
+            "    Creada (BD): {ca}".format(ca=enrichment["created_at"]),
+        )
+    if "model" in enrichment:
+        lines.append(
+            "    Modelo (BD): {m}".format(m=enrichment["model"]),
+        )
 
     await msg.reply_text("\n".join(lines))
 
@@ -301,31 +228,21 @@ async def _session_discover(update: Update, chat_id: int, container: AppContaine
     """Show all OpenCode sessions with adoption status."""
     msg = require_message(update)
     strings = get_strings()
-    oc_sessions = await fetch_opencode_sessions()
-    sessions = await container.session_store.list_sessions(chat_id)
+    discovered = await container.session_service.discover(chat_id)
 
-    # Build adoption map
-    adopted_map: dict[str, str] = {}
-    for s in sessions:
-        if s.real_id:
-            adopted_map[s.real_id] = s.name
-
-    if not oc_sessions:
+    if not discovered:
         await msg.reply_text(strings.SESSION_DISCOVER_EMPTY)
         return
 
     lines = [strings.SESSION_DISCOVER_HEADER + "\n"]
 
-    for oc in oc_sessions[:15]:
-        sid = oc["id"]
-        title = oc["title"][:60]
+    for oc in discovered[:15]:
+        sid = oc.id
+        title = oc.title[:60]
 
-        friendly_name = adopted_map.get(sid)
-        if friendly_name:
-            matching = next((x for x in sessions if x.name == friendly_name), None)
-            prompt_count = matching.prompt_count if matching else 0
+        if oc.adopted_name:
             lines.append(
-                f"\u2705 *{friendly_name}* → `{sid}` (ya adoptada, {prompt_count} prompts)"
+                f"\u2705 *{oc.adopted_name}* → `{sid}` (ya adoptada, {oc.prompt_count} prompts)"
             )
         else:
             lines.append(
@@ -333,8 +250,8 @@ async def _session_discover(update: Update, chat_id: int, container: AppContaine
             )
         lines.append("")
 
-    if len(oc_sessions) > 15:
-        lines.append(f"Mostrando 15 de {len(oc_sessions)} sesiones.")
+    if len(discovered) > 15:
+        lines.append(f"Mostrando 15 de {len(discovered)} sesiones.")
 
     lines.append("\nUsa `/session adopt <id> <nombre>` para adoptar una sesión.")
 
@@ -364,42 +281,23 @@ async def _session_adopt(
         )
         return
 
-    if not re.match(r"^[a-zA-Z0-9_-]{1,30}$", name):
+    try:
+        await container.session_service.adopt(chat_id, real_id, name)
+    except InvalidSessionNameError:
         await msg.reply_text(
             "\u274c El nombre debe tener entre 1 y 30 caracteres y solo usar "
             "letras, números, guiones y guiones bajos.\n"
             "Ejemplo: `mi-sesion`, `balanceate_api`, `docs`"
         )
         return
-
-    oc_sessions = await fetch_opencode_sessions()
-    oc_by_id = {s["id"]: s for s in oc_sessions}
-
-    if real_id not in oc_by_id:
+    except SessionNotDiscoveredError:
         await msg.reply_text(f"\u274c La sesión `{real_id}` no existe en OpenCode.")
         return
-
-    # Check if name already exists
-    existing = await container.session_store.list_sessions(chat_id)
-    if any(s.name == name for s in existing):
+    except SessionExistsError:
         await msg.reply_text(
             f"\u26a0\ufe0f El nombre '{name}' ya existe. Usá /session switch {name} para usarla."
         )
         return
-
-    # Adopt via SessionStore (single source of truth, avoids dual-cache bypass)
-    oc_info = oc_by_id[real_id]
-    await container.session_store.create_session(chat_id, name)
-    await container.session_store.update_session_id(chat_id, real_id)
-    await container.session_store.update_session_title(chat_id, name, oc_info.get("title", name))
-    invalidate_opencode_sessions_cache()
-
-    logger.info(
-        "Session '%s' adopted (%s) for %s",
-        name,
-        real_id,
-        mask_chat_id(chat_id),
-    )
 
     await msg.reply_text(f"\u2705 Sesión '{name}' adoptada (ID: `{real_id}`)")
 

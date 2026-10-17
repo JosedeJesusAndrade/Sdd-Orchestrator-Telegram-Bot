@@ -12,26 +12,20 @@ Phase 2 logging:
 
 from __future__ import annotations
 
-import logging
-import time
 from typing import cast
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import (
-    CONTAINER_KEY,
-    DEFAULT_MODEL,
-    DEFAULT_SESSION_NAME,
-    resolve_model,
-)
+from config import CONTAINER_KEY, DEFAULT_SESSION_NAME, resolve_model
 from handlers import authorized
 from handlers._guards import require_chat, require_message
 from locales import get_strings
 from services.container import AppContainer
 from services.prompt_service import PromptAlreadyRunningError
+from services.settings_service import InvalidSettingValueError, UnknownSettingError
 from services.telegram_chat_view import TelegramChatView
-from utils.logging import get_module_logger, log_exception, mask_chat_id
+from utils.logging import get_module_logger, mask_chat_id
 from utils.time_formatting import relative_time
 
 logger = get_module_logger(__name__)
@@ -84,74 +78,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 @authorized
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show current session status using SessionStore."""
+    """Show current session status via StatusService (presentation only)."""
     msg = require_message(update)
     chat_id = require_chat(update).id
     container = _get_container(context)
 
-    session = await container.session_store.get_active_session(chat_id)
-    model = await container.session_store.get_model(chat_id)
-
-    settings = await container.session_store.get_all_chat_settings(chat_id)
-    workdir = settings.get("workdir", "")
-    branch = "?"
-    if workdir:
-        try:
-            import subprocess
-
-            br = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True,
-                text=True,
-                cwd=workdir,
-                timeout=5,
-            )
-            if br.returncode == 0:
-                branch = br.stdout.strip()
-        except Exception:
-            log_exception(
-                "git_branch_lookup_failed",
-                module=__name__,
-                level=logging.DEBUG,
-            )
+    snapshot = await container.status_service.snapshot(chat_id)
 
     # Build session info
-    if session is not None:
-        session_name = session.name
+    if snapshot.session_name is not None:
+        session_name = snapshot.session_name
         session_id_display = (
-            session.real_id[:24] + "..."
-            if session.real_id and len(session.real_id) > 24
-            else (session.real_id or "pendiente")
+            snapshot.session_real_id[:24] + "..."
+            if snapshot.session_real_id and len(snapshot.session_real_id) > 24
+            else (snapshot.session_real_id or "pendiente")
         )
-        first_msg = (
-            relative_time(type("dt", (), {"replace": lambda **kw: None})())
-            if not session.created
-            else "pendiente"
-        )
+        first_msg = "pendiente"
+        if snapshot.created is not None:
+            first_msg = relative_time(snapshot.created)
+        elif snapshot.created_fallback is not None:
+            first_msg = snapshot.created_fallback[:19]
+
         last_used = "N/A"
-        prompt_count = session.prompt_count
+        if snapshot.last_used is not None:
+            last_used = relative_time(snapshot.last_used)
+        elif snapshot.last_used_fallback is not None:
+            last_used = snapshot.last_used_fallback
 
-        # Try to compute relative time for last_used
-        if session.last_used:
-            try:
-                from datetime import datetime
-
-                last_dt = datetime.fromisoformat(session.last_used)
-                last_used = relative_time(last_dt)
-            except Exception:
-                # Malformed timestamp: show the raw value; silence is fine.
-                last_used = str(session.last_used)
-
-        # For created time
-        if session.created:
-            try:
-                from datetime import datetime
-
-                created_dt = datetime.fromisoformat(session.created)
-                first_msg = relative_time(created_dt)
-            except Exception:
-                # Malformed timestamp: fall back to a truncated raw value.
-                first_msg = session.created[:19] if session.created else "N/A"
+        prompt_count = snapshot.prompt_count
     else:
         session_name = "-"
         session_id_display = "-"
@@ -159,9 +113,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         last_used = "N/A"
         prompt_count = 0
 
-    # Uptime from container
-    if container.start_time is not None:
-        uptime_seconds = int(time.time() - container.start_time)
+    # Uptime from the snapshot
+    if snapshot.uptime_seconds is not None:
+        uptime_seconds = snapshot.uptime_seconds
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         uptime_str = f"{hours}h {minutes}m {seconds}s"
@@ -172,8 +126,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "\U0001f4ca Estado de la sesión\n"
         f"\u251c\u2500 Nombre: {session_name}\n"
         f"\u251c\u2500 ID OpenCode: {session_id_display}\n"
-        f"\u251c\u2500 Modelo: {model}\n"
-        f"\u251c\u2500 Rama: {branch}\n"
+        f"\u251c\u2500 Modelo: {snapshot.model}\n"
+        f"\u251c\u2500 Rama: {snapshot.branch}\n"
         f"\u251c\u2500 Primera interacción: {first_msg}\n"
         f"\u251c\u2500 Última interacción: {last_used}\n"
         f"\u251c\u2500 Total prompts: {prompt_count}\n"
@@ -282,133 +236,70 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = require_chat(update).id
     args = context.args
     container = _get_container(context)
-    store = container.session_store
-    from config import OPENCODE_TIMEOUT, OPENCODE_WORKDIR
 
     strings = get_strings()
 
     if not args:
-        settings = await store.get_all_chat_settings(chat_id)
-        model = settings.get("model", DEFAULT_MODEL)
-        timeout = settings.get("timeout", OPENCODE_TIMEOUT)
-        workdir = settings.get("workdir", OPENCODE_WORKDIR)
-        provider = settings.get("provider", "opencode")
+        settings = await container.settings_service.get(chat_id)
         lines = [strings.CONFIG_HEADER + "\n"]
-        lines.append(f"  modelo: `{model}`")
-        lines.append(f"  timeout: `{timeout}s`")
-        lines.append(f"  workdir: `{workdir}`")
-        lines.append(f"  provider: `{provider}`")
+        lines.append(f"  modelo: `{settings.model}`")
+        lines.append(f"  timeout: `{settings.timeout}s`")
+        lines.append(f"  workdir: `{settings.workdir}`")
+        lines.append(f"  provider: `{settings.provider}`")
         await msg.reply_text("\n".join(lines))
         return
 
     key = args[0].lower()
-    if key not in ("model", "timeout", "workdir", "provider"):
+    try:
+        if len(args) < 2:
+            value = await container.settings_service.get_value(chat_id, key)
+            await msg.reply_text(f"{key} = `{value}`")
+            return
+        value = await container.settings_service.set(chat_id, key, args[1])
+    except UnknownSettingError:
         await msg.reply_text(strings.CONFIG_UNKNOWN_KEY.format(key=key))
         return
-
-    if len(args) < 2:
-        default_map = {
-            "model": DEFAULT_MODEL,
-            "timeout": OPENCODE_TIMEOUT,
-            "workdir": OPENCODE_WORKDIR,
-            "provider": "opencode",
-        }
-        value = await store.get_chat_setting(chat_id, key, default_map[key])
-        await msg.reply_text(f"{key} = `{value}`")
+    except InvalidSettingValueError:
+        await msg.reply_text(strings.CONFIG_INVALID_TIMEOUT)
         return
 
-    value = args[1]
-    if key == "model":
-        from config import resolve_model
-
-        value = resolve_model(value)
-    elif key == "timeout":
-        try:
-            value = int(value)
-        except ValueError:
-            await msg.reply_text(strings.CONFIG_INVALID_TIMEOUT)
-            return
-        await store.set_chat_setting(chat_id, key, value)
+    if key == "timeout":
         await msg.reply_text(strings.CONFIG_TIMEOUT_SET.format(value=value))
-        return
-
-    await store.set_chat_setting(chat_id, key, value)
-    await msg.reply_text(strings.CONFIG_SET.format(key=key, value=value))
+    else:
+        await msg.reply_text(strings.CONFIG_SET.format(key=key, value=value))
 
 
 @authorized
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Health check: /health — versión, uptime, conectividad, sesiones."""
-    import re
-    import sys
-    from pathlib import Path
-
     container = _get_container(context)
     chat_id = require_chat(update).id
     sender = container.message_sender
-    store = container.session_store
 
-    # Version from pyproject.toml
-    try:
-        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        content = pyproject.read_text(encoding="utf-8")
-        vm = re.search(r'version\s*=\s*"([^"]+)"', content)
-        version = vm.group(1) if vm else "?"
-    except Exception:
-        log_exception(
-            "health_version_read_failed",
-            module=__name__,
-            level=logging.DEBUG,
-        )
-        version = "?"
+    snapshot = await container.health_service.snapshot(
+        chat_id, connectivity_probe=container.bot_port
+    )
 
-    # Uptime
-    uptime_s = int(time.time() - container.start_time)
-    h, m = divmod(uptime_s, 3600)
+    h, m = divmod(snapshot.uptime_seconds, 3600)
     m, s = divmod(m, 60)
 
-    # Connectivity
-    try:
-        me = await container.bot_port.get_me()
-        bot_user = me.get("username", "?")
+    if snapshot.connected is None:
+        connected = "n/a"
+    elif snapshot.connected:
         connected = "✅ Conectado"
-    except Exception as e:
-        log_exception(
-            "health_get_me_failed",
-            module=__name__,
-            level=logging.WARNING,
-            error_type=type(e).__name__,
-        )
-        bot_user = "?"
+    else:
         connected = "❌ Sin conexión"
 
-    # OpenCode sessions
-    try:
-        from persistence.sessions import fetch_opencode_sessions
-
-        oc = await fetch_opencode_sessions()
-        oc_count: int | str = len(oc)
-    except Exception:
-        log_exception(
-            "health_oc_sessions_failed",
-            module=__name__,
-            level=logging.DEBUG,
-        )
-        oc_count = "?"
-
-    # Per-chat info
-    settings = await store.get_all_chat_settings(chat_id)
-    workdir = settings.get("workdir", "default")
-    model = await store.get_model(chat_id)
+    oc_count: int | str = "?" if snapshot.oc_session_count is None else snapshot.oc_session_count
 
     lines = [
         "🩺 *Health Check*\n",
-        f"📦 v{version}",
-        f"🤖 @{bot_user} | {connected}",
+        f"📦 v{snapshot.version}",
+        f"🤖 @{snapshot.bot_user} | {connected}",
         f"⏱️ Uptime: {h}h {m}m {s}s",
-        f"🐍 Python {sys.version_info.major}.{sys.version_info.minor}",
+        f"🐍 Python {snapshot.python}",
         f"💾 Sesiones OpenCode: {oc_count}",
-        f"📁 Workdir: `{workdir}`",
-        f"🧠 Modelo: `{model}`",
+        f"📁 Workdir: `{snapshot.workdir}`",
+        f"🧠 Modelo: `{snapshot.model}`",
     ]
     await sender.send_plain(chat_id, "\n".join(lines))

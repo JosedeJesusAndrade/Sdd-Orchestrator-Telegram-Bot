@@ -34,10 +34,8 @@ from config import (
     CONTAINER_KEY,
     DEFAULT_MODEL,
     OPENAI_API_KEY,
-    OPENCODE_CMD,
     OPENCODE_TIMEOUT,
     OPENCODE_WORKDIR,
-    SESSIONS_PATH,
 )
 from handlers.admin import session_preview_command, test_md_command
 from handlers.ci import pr_command, update_command, wdir_command
@@ -56,12 +54,9 @@ from handlers.messages import handle_message, handle_voice
 from handlers.sessions import session_command
 from opencode.client import query_opencode_db
 from persistence.sessions import fetch_opencode_sessions
-from services.ai_provider_factory import AIProviderFactory
+from services.composition import build_prompt_stack
 from services.container import AppContainer
 from services.message_sender import MessageSender
-from services.opencode_cli_backend import OpenCodeCLIBackend
-from services.prompt_service import PromptService
-from services.session_store import SessionStore
 from services.telegram_adapter import TelegramAdapter
 from utils.logging import get_module_logger, log_exception
 
@@ -318,8 +313,6 @@ async def run_bot() -> None:
     AppContainer injected via app.bot_data[CONTAINER_KEY] (DI).
     Handlers access services via _get_container(context).
     """
-    start_time = time.time()
-
     app = build_application()
 
     await app.initialize()
@@ -327,33 +320,25 @@ async def run_bot() -> None:
     assert app.updater is not None
     await app.updater.start_polling()
 
-    # ── Build the service layer and inject into PTB application context ──
+    # ── Build the shared, frontend-agnostic core graph ──
+    # Composition root extracted to services/composition.py (Fase A): a second
+    # frontend (Flet) reuses this EXACT wiring. start_time now lives in
+    # CoreStack so both frontends share uptime semantics.
+    core = build_prompt_stack()
+
+    # ── Telegram-specific adapters + DI payload ──
+    # Only the PTB transport pieces stay here; the provider registration and
+    # the SessionStore/PromptService wiring moved into build_prompt_stack().
     bot_port = TelegramAdapter(app.bot)
-
-    # Register the provider class + its construction defaults ONCE. The
-    # factory no longer caches an instance (F3): PromptService builds one
-    # backend per conversation so cancels stay isolated.
-    provider_factory = AIProviderFactory(default_provider="opencode")
-    provider_factory.register(
-        "opencode", OpenCodeCLIBackend,
-        opencode_cmd=OPENCODE_CMD, workdir=OPENCODE_WORKDIR,
-        timeout=OPENCODE_TIMEOUT,
-    )
-
-    session_store = SessionStore(SESSIONS_PATH)
     message_sender = MessageSender(bot_port)
-    prompt_service = PromptService(
-        session_store=session_store,
-        provider_factory=provider_factory,
-    )
 
     container = AppContainer(
-        session_store=session_store,
+        session_store=core.session_store,
         message_sender=message_sender,
-        prompt_service=prompt_service,
-        provider_factory=provider_factory,
+        prompt_service=core.prompt_service,
+        provider_factory=core.provider_factory,
         bot_port=bot_port,
-        start_time=start_time,
+        start_time=core.start_time,
         allowed_chat_ids=ALLOWED_CHAT_IDS,
         default_model=DEFAULT_MODEL,
     )
@@ -455,7 +440,7 @@ async def run_bot() -> None:
         extra={
             "event": "bot_stop",
             "exit_code": exit_code[0],
-            "uptime_s": round(time.time() - start_time, 2),
+            "uptime_s": round(time.time() - core.start_time, 2),
         },
     )
     sys.exit(exit_code[0])

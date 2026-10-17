@@ -5,7 +5,7 @@ _remove_tool_traces."""
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from formatting.markdown import (
     _filter_stderr,
@@ -49,12 +49,13 @@ class TestCleanOpencodeOutput:
         stderr = "\n> sdd-orchestrator · MiniMax-M3\n"
         first_pass = clean_opencode_output(stdout)
         from formatting.markdown import _assemble_response
+
         assembled = _assemble_response(first_pass, stderr)
         assert "Body content here." in assembled
         assert "MiniMax-M3" not in assembled
 
     def test_removes_tool_traces_single_line(self):
-        text = "\u2699 notion_API-post-search {\"filter\": {}}\nResponse text"
+        text = '\u2699 notion_API-post-search {"filter": {}}\nResponse text'
         result = clean_opencode_output(text)
         assert "notion_API" not in result
 

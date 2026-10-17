@@ -98,9 +98,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if workdir:
         try:
             import subprocess
+
             br = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, cwd=workdir, timeout=5,
+                capture_output=True,
+                text=True,
+                cwd=workdir,
+                timeout=5,
             )
             if br.returncode == 0:
                 branch = br.stdout.strip()
@@ -119,9 +123,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if session.real_id and len(session.real_id) > 24
             else (session.real_id or "pendiente")
         )
-        first_msg = relative_time(
-            type("dt", (), {"replace": lambda **kw: None})()
-        ) if not session.created else "pendiente"
+        first_msg = (
+            relative_time(type("dt", (), {"replace": lambda **kw: None})())
+            if not session.created
+            else "pendiente"
+        )
         last_used = "N/A"
         prompt_count = session.prompt_count
 
@@ -129,6 +135,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if session.last_used:
             try:
                 from datetime import datetime
+
                 last_dt = datetime.fromisoformat(session.last_used)
                 last_used = relative_time(last_dt)
             except Exception:
@@ -139,6 +146,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if session.created:
             try:
                 from datetime import datetime
+
                 created_dt = datetime.fromisoformat(session.created)
                 first_msg = relative_time(created_dt)
             except Exception:
@@ -196,8 +204,7 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         },
     )
     await msg.reply_text(
-        f"\U0001f504 Sesión '{active_name}' reiniciada. "
-        "El próximo mensaje comenzará desde cero."
+        f"\U0001f504 Sesión '{active_name}' reiniciada. El próximo mensaje comenzará desde cero."
     )
 
 
@@ -277,6 +284,7 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     container = _get_container(context)
     store = container.session_store
     from config import OPENCODE_TIMEOUT, OPENCODE_WORKDIR
+
     strings = get_strings()
 
     if not args:
@@ -299,7 +307,12 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if len(args) < 2:
-        default_map = {"model": DEFAULT_MODEL, "timeout": OPENCODE_TIMEOUT, "workdir": OPENCODE_WORKDIR, "provider": "opencode"}
+        default_map = {
+            "model": DEFAULT_MODEL,
+            "timeout": OPENCODE_TIMEOUT,
+            "workdir": OPENCODE_WORKDIR,
+            "provider": "opencode",
+        }
         value = await store.get_chat_setting(chat_id, key, default_map[key])
         await msg.reply_text(f"{key} = `{value}`")
         return
@@ -307,6 +320,7 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     value = args[1]
     if key == "model":
         from config import resolve_model
+
         value = resolve_model(value)
     elif key == "timeout":
         try:
@@ -371,6 +385,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # OpenCode sessions
     try:
         from persistence.sessions import fetch_opencode_sessions
+
         oc = await fetch_opencode_sessions()
         oc_count: int | str = len(oc)
     except Exception:

@@ -3,6 +3,7 @@
 All bot dependencies in one dataclass. Immutable after construction.
 Injected via PTB's context.application.bot_data["container"].
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 @dataclass
 class AppContainer:
     """All bot dependencies. Handlers receive this via context."""
+
     session_store: SessionStore
     message_sender: MessageSender
     prompt_service: PromptService

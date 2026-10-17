@@ -37,7 +37,9 @@ class _TelegramProgressHandle:
         if self._message_id is None:
             return
         await self._sender.edit_message(
-            self._conversation_id, self._message_id, text,
+            self._conversation_id,
+            self._message_id,
+            text,
         )
 
     async def update(self, text: str) -> None:

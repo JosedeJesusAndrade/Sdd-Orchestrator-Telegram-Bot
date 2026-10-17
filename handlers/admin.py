@@ -47,23 +47,20 @@ async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     msgs = await container.message_sender.send_formatted(chat_id, test_msg)
     if msgs:
-        await msg.reply_text(
-            "Test message sent with MarkdownV2. Check if formatting works."
-        )
+        await msg.reply_text("Test message sent with MarkdownV2. Check if formatting works.")
     else:
         logger.warning(
             "MarkdownV2 test failed",
             extra={"event": "mdv2_test_failed", "chat_id": chat_id},
         )
-        await msg.reply_text(
-            "MarkdownV2 test FAILED. Check bot logs for details."
-        )
+        await msg.reply_text("MarkdownV2 test FAILED. Check bot logs for details.")
         await container.message_sender.send_plain(chat_id, test_msg)
 
 
 @authorized
 async def session_preview_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """Debug: show raw session state from both sessions.json and OpenCode."""
     chat_id = require_chat(update).id
@@ -81,7 +78,10 @@ async def session_preview_command(
             oc_id = info.get("id", "?")[:20] + "..."
             lines.append(
                 "{} *{}* → `{}` (prompts: {})".format(
-                    marker, name, oc_id, info.get("prompt_count", 0),
+                    marker,
+                    name,
+                    oc_id,
+                    info.get("prompt_count", 0),
                 )
             )
     else:
@@ -92,9 +92,7 @@ async def session_preview_command(
     try:
         raw = await fetch_opencode_sessions()
         for s in raw[:10]:
-            lines.append(
-                "\u2022 `{}...` {}".format(s["id"][:20], s["title"][:40])
-            )
+            lines.append("\u2022 `{}...` {}".format(s["id"][:20], s["title"][:40]))
     except Exception as e:
         log_exception(
             "session_preview_fetch_error",

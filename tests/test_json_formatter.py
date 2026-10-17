@@ -3,6 +3,7 @@
 The masking tests are the security contract: JSON mode MUST apply the same
 `chat_id -> chat_id_masked` rule as text mode (shared _extract_structured_fields).
 """
+
 import json
 import logging
 import sys
@@ -18,17 +19,22 @@ from utils.logging import (
 
 def _record(level: int, msg: str, exc_info=None, **extra) -> logging.LogRecord:
     record = logging.LogRecord(
-        name="test", level=level, pathname=__file__, lineno=0,
-        msg=msg, args=(), exc_info=exc_info,
+        name="test",
+        level=level,
+        pathname=__file__,
+        lineno=0,
+        msg=msg,
+        args=(),
+        exc_info=exc_info,
     )
     for k, v in extra.items():
         setattr(record, k, v)
     return record
 
 
-def _caught_exc_info() -> (
-    tuple[type[BaseException] | None, BaseException | None, TracebackType | None]
-):
+def _caught_exc_info() -> tuple[
+    type[BaseException] | None, BaseException | None, TracebackType | None
+]:
     try:
         raise ValueError("explota")
     except ValueError:
@@ -66,9 +72,7 @@ def test_key_parity_with_text_formatter() -> None:
 
 
 def test_chat_id_is_masked_in_json() -> None:
-    out = JsonFormatter().format(
-        _record(logging.INFO, "msg", event="x", chat_id=8664220427)
-    )
+    out = JsonFormatter().format(_record(logging.INFO, "msg", event="x", chat_id=8664220427))
     assert "8664220427" not in out, f"raw chat_id leaked into JSON: {out}"
     payload = json.loads(out)
     assert payload["chat_id_masked"] == mask_chat_id(8664220427)
@@ -76,9 +80,7 @@ def test_chat_id_is_masked_in_json() -> None:
 
 
 def test_string_chat_id_is_masked_in_json() -> None:
-    out = JsonFormatter().format(
-        _record(logging.INFO, "msg", event="x", chat_id="8664220427")
-    )
+    out = JsonFormatter().format(_record(logging.INFO, "msg", event="x", chat_id="8664220427"))
     assert "8664220427" not in out
     assert json.loads(out)["chat_id_masked"] == mask_chat_id("8664220427")
 
@@ -112,9 +114,7 @@ def test_exc_only_present_with_exc_info() -> None:
 
 def test_unsafe_value_becomes_string() -> None:
     obj = object()
-    payload = json.loads(
-        JsonFormatter().format(_record(logging.INFO, "obj", event="x", obj=obj))
-    )
+    payload = json.loads(JsonFormatter().format(_record(logging.INFO, "obj", event="x", obj=obj)))
     assert isinstance(payload["obj"], str)
     assert "object object" in payload["obj"]
 
@@ -130,9 +130,7 @@ def test_circular_reference_degrades_without_crash() -> None:
 
 
 def test_spanish_accents_are_not_escaped() -> None:
-    out = JsonFormatter().format(
-        _record(logging.INFO, "sesión creada", event="x", usuario="María")
-    )
+    out = JsonFormatter().format(_record(logging.INFO, "sesión creada", event="x", usuario="María"))
     assert "sesión" in out, "ensure_ascii=False must keep accents readable"
     assert "María" in out
 
@@ -150,7 +148,5 @@ def test_req_reads_request_id_attribute() -> None:
 
 
 def test_field_order_is_event_then_extras_then_msg() -> None:
-    payload = json.loads(
-        JsonFormatter().format(_record(logging.INFO, "hola", event="evt", k="v"))
-    )
+    payload = json.loads(JsonFormatter().format(_record(logging.INFO, "hola", event="evt", k="v")))
     assert list(payload) == ["ts", "level", "logger", "req", "event", "k", "msg"]

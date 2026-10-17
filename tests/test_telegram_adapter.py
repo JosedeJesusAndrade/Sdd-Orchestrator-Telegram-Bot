@@ -11,6 +11,7 @@ Contract after the fix:
   - ``MessageSender`` = the single owner of the formatting fallback, and the
     single emitter of both fallback events.
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +25,7 @@ from services.message_sender import MessageSender
 from services.telegram_adapter import TelegramAdapter
 
 # ── Fake PTB bot ──────────────────────────────────────────────────────
+
 
 class _FakeMessage:
     def __init__(self, message_id: int, text: str) -> None:
@@ -39,9 +41,7 @@ class _RecordingBot:
         self._error = error
 
     async def send_message(self, chat_id, text, parse_mode=None):
-        self.calls.append(
-            {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
-        )
+        self.calls.append({"chat_id": chat_id, "text": text, "parse_mode": parse_mode})
         if self._error is not None:
             raise self._error
         return _FakeMessage(message_id=len(self.calls), text=text)
@@ -58,6 +58,7 @@ class _Probe(logging.Handler):
 
 # ── TelegramAdapter.send_message: pure passthrough ────────────────────
 
+
 async def test_adapter_send_message_is_a_single_passthrough_call() -> None:
     bot = _RecordingBot()
     adapter = TelegramAdapter(cast(Bot, bot))
@@ -68,9 +69,7 @@ async def test_adapter_send_message_is_a_single_passthrough_call() -> None:
     assert info.chat_id == 5
     assert info.message_id == 1
     assert info.text == "hello"
-    assert bot.calls == [
-        {"chat_id": 5, "text": "hello", "parse_mode": "MarkdownV2"}
-    ]
+    assert bot.calls == [{"chat_id": 5, "text": "hello", "parse_mode": "MarkdownV2"}]
 
 
 async def test_adapter_send_message_raises_without_falling_back() -> None:
@@ -92,6 +91,7 @@ async def test_adapter_send_message_raises_without_falling_back() -> None:
 
 
 # ── MessageSender: canonical formatted→plain fallback ─────────────────
+
 
 class _FlakyBotPort:
     """Fails the first (MDV2) attempt, succeeds on the plain retry."""

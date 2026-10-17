@@ -1,4 +1,5 @@
 """OpenCode CLI client for running prompts and managing sessions."""
+
 import asyncio
 import json
 import re
@@ -36,7 +37,7 @@ async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> lis
                 encoding="utf-8",
                 errors="replace",
                 timeout=INTERNAL_SUBPROCESS_TIMEOUT,
-            )
+            ),
         )
         if result.returncode != 0:
             logger.warning(
@@ -59,4 +60,3 @@ async def query_opencode_db(sql: str, allowed_pattern: str | None = None) -> lis
             exc_info=True,
         )
         return []
-

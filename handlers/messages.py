@@ -65,6 +65,7 @@ async def transcribe_voice(file_path: str, chat_id: int | None = None) -> str | 
 
     try:
         from openai import AsyncOpenAI
+
         client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
         with open(file_path, "rb") as audio_file:
@@ -129,11 +130,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # PTB types ``Voice.duration`` as ``int | datetime.timedelta``. Comparing a
     # timedelta with an int raises TypeError, so normalize defensively.
     raw_duration = voice.duration
-    duration = (
-        raw_duration.total_seconds()
-        if isinstance(raw_duration, timedelta)
-        else raw_duration
-    )
+    duration = raw_duration.total_seconds() if isinstance(raw_duration, timedelta) else raw_duration
     if duration < 1:
         await msg.reply_text("El audio es muy corto, no se detectó voz.")
         return
@@ -170,9 +167,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     except PromptAlreadyRunningError:
-        await msg.reply_text(
-            "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
-        )
+        await msg.reply_text("\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo.")
     except Exception as e:
         # Why extra={} here? The bare "%s" formatter above meant we lost the
         # machine-readable event index and any correlated fields (chat_id,
@@ -189,9 +184,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             },
         )
         try:
-            await progress_msg.edit_text(
-                "\u274c Error al procesar el audio. Intentá de nuevo."
-            )
+            await progress_msg.edit_text("\u274c Error al procesar el audio. Intentá de nuevo.")
         except Exception:
             log_exception(
                 "voice_error_edit_failed",
@@ -232,6 +225,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             view=TelegramChatView(container.message_sender, chat_id),
         )
     except PromptAlreadyRunningError:
-        await msg.reply_text(
-            "\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo."
-        )
+        await msg.reply_text("\u23f3 Ya hay un prompt en proceso. Usá /cancel para cancelarlo.")

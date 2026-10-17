@@ -155,9 +155,7 @@ class PromptService:
         from utils.logging import mask_chat_id
 
         if conversation_id in self._running:
-            raise PromptAlreadyRunningError(
-                f"Chat {conversation_id} already has a running prompt"
-            )
+            raise PromptAlreadyRunningError(f"Chat {conversation_id} already has a running prompt")
 
         masked_cid = mask_chat_id(conversation_id)
         start_time = time.monotonic()
@@ -198,7 +196,11 @@ class PromptService:
 
             # 3. Execute OpenCode via AI backend
             result = await self._execute_prompt(
-                conversation_id, prompt_text, session, model, view.source_label,
+                conversation_id,
+                prompt_text,
+                session,
+                model,
+                view.source_label,
             )
 
             await self._stop_progress(progress_task)
@@ -260,7 +262,9 @@ class PromptService:
         Returns a dict with keys: stdout, stderr, returncode, cancelled.
         """
         provider = await self._store.get_chat_setting(conversation_id, "provider", "opencode")
-        timeout_val = await self._store.get_chat_setting(conversation_id, "timeout", OPENCODE_TIMEOUT)
+        timeout_val = await self._store.get_chat_setting(
+            conversation_id, "timeout", OPENCODE_TIMEOUT
+        )
         workdir = await self._store.get_chat_setting(conversation_id, "workdir", OPENCODE_WORKDIR)
         agent = await self._store.get_chat_setting(conversation_id, "agent", "sdd-orchestrator")
 
@@ -274,7 +278,9 @@ class PromptService:
         # Check if cancelled during settings resolution (before subprocess)
         if conversation_id in self._cancel:
             return {
-                "stdout": "", "stderr": "", "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+                "returncode": 0,
                 "cancelled": True,
             }
 
@@ -313,12 +319,11 @@ class PromptService:
             return
 
         # Handle hard errors (non-zero exit + empty stdout, or errors via stderr)
-        has_error = (
-            result["returncode"] != 0
-            or (result["stderr"] and not result["stdout"].strip())
-        )
+        has_error = result["returncode"] != 0 or (result["stderr"] and not result["stdout"].strip())
         if has_error:
-            error_text = clean_opencode_output(result["stderr"] or result["stdout"] or "Unknown error")
+            error_text = clean_opencode_output(
+                result["stderr"] or result["stdout"] or "Unknown error"
+            )
             await handle.error(f"\u274c Error: {error_text[:500]}")
             return
 
@@ -334,10 +339,7 @@ class PromptService:
 
         # Prepend new-session header for brand-new sessions
         if session is not None and not session.real_id and session.name:
-            response = (
-                f"\U0001f195 Nueva sesión '{session.name}' iniciada\n\n"
-                + response
-            )
+            response = f"\U0001f195 Nueva sesión '{session.name}' iniciada\n\n" + response
 
         # Track whether we actually delivered content
         is_success = result["returncode"] == 0
@@ -366,9 +368,7 @@ class PromptService:
             # Defensive: a non-successful result that still delivered content.
             # Unreachable today (non-zero exit is handled above) but keeps the
             # placeholder from sticking if that changes.
-            await handle.error(
-                f"\u274c Error (c\u00f3digo {result['returncode']})."
-            )
+            await handle.error(f"\u274c Error (c\u00f3digo {result['returncode']}).")
 
         # Capture session ID for new sessions
         await self._capture_session_id(conversation_id, result["stdout"], session)
@@ -399,7 +399,7 @@ class PromptService:
         real session ID (e.g., ses_AbCdEf123). We capture this so
         subsequent prompts use --continue.
         """
-        match = re.search(r'(ses_[a-zA-Z0-9]+)', stdout)
+        match = re.search(r"(ses_[a-zA-Z0-9]+)", stdout)
         if not match:
             return
         real_id = match.group(1)
@@ -408,6 +408,7 @@ class PromptService:
         if active is not None and not active.real_id:
             await self._store.update_session_id(conversation_id, real_id)
             from utils.logging import mask_chat_id
+
             logger.info(
                 "Captured OpenCode session ID",
                 extra={
@@ -430,7 +431,7 @@ class PromptService:
 
         truncated = prompt[:100] + "..." if len(prompt) > 100 else prompt
         safe_prompt = truncated
-        for pattern in ['sk-', 'Bearer ', '-----BEGIN', 'token=', 'secret=']:
+        for pattern in ["sk-", "Bearer ", "-----BEGIN", "token=", "secret="]:
             if pattern.lower() in safe_prompt.lower():
                 safe_prompt = "[REDACTED - possible credential]"
                 break
@@ -465,9 +466,7 @@ class PromptService:
             while True:
                 await asyncio.sleep(PROGRESS_UPDATE_INTERVAL)
                 elapsed = int(time.monotonic() - start)
-                await handle.update(
-                    f"\u23f3 OpenCode procesando... ({elapsed}s)"
-                )
+                await handle.update(f"\u23f3 OpenCode procesando... ({elapsed}s)")
         except asyncio.CancelledError:
             # _update_progress is the periodic "(Ns)" editor; cancel propagation
             # is how the prompt loop stops it — expected, not a failure.

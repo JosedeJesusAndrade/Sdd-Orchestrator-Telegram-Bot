@@ -3,13 +3,12 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from persistence.sessions import parse_opencode_session_list
 
 
 class TestParseOpencodeSessionList:
-
     def test_parses_valid_output(self):
         output = "ses_ABC123def456  My test session title  12:34"
         result = parse_opencode_session_list(output)
@@ -20,8 +19,7 @@ class TestParseOpencodeSessionList:
 
     def test_parses_multiple_sessions(self):
         output = (
-            "ses_AAA111  First session   10:00\n"
-            "ses_BBB222  Second session  11:30 \u00b7 19/5/2026"
+            "ses_AAA111  First session   10:00\nses_BBB222  Second session  11:30 \u00b7 19/5/2026"
         )
         result = parse_opencode_session_list(output)
         assert len(result) == 2

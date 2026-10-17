@@ -6,6 +6,7 @@ Phase 2 logging: every subprocess execution emits structured events:
   - WARNING event=subprocess_timeout   (cmd, timeout_s)
   - ERROR   event=subprocess_error     (cmd, model, returncode, stderr)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -30,8 +31,12 @@ class OpenCodeCLIBackend:
         self._current_process: asyncio.subprocess.Process | None = None
 
     async def execute(
-        self, prompt: str, model: str, session_id: str | None,
-        agent: str | None = None, workdir: str | None = None,
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None,
+        agent: str | None = None,
+        workdir: str | None = None,
         source_label: str = "",
         timeout: int | None = None,
     ) -> AIBackendResult:
@@ -89,7 +94,8 @@ class OpenCodeCLIBackend:
 
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=effective_timeout,
+                proc.communicate(),
+                timeout=effective_timeout,
             )
             elapsed = time.monotonic() - start_time
             returncode = proc.returncode or 0
@@ -103,7 +109,9 @@ class OpenCodeCLIBackend:
                         "model": model,
                         "returncode": returncode,
                         "duration_s": round(elapsed, 3),
-                        "stderr": (stderr.decode("utf-8", errors="replace") if stderr else "")[:500],
+                        "stderr": (stderr.decode("utf-8", errors="replace") if stderr else "")[
+                            :500
+                        ],
                     },
                 )
             else:

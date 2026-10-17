@@ -70,7 +70,7 @@ class ConnectionState:
     """Tracks network connectivity to avoid spamming the terminal."""
 
     def __init__(self) -> None:
-        self._connected: bool = True           # assume connected at startup
+        self._connected: bool = True  # assume connected at startup
         self._consecutive_failures: int = 0
         self._first_failure_at: datetime | None = None
 
@@ -80,24 +80,12 @@ class ConnectionState:
         if self._connected:
             self._connected = False
             self._first_failure_at = datetime.now(UTC)
-            logger.warning(
-                "=" * 55
-            )
-            logger.warning(
-                "  ⚠️  CONEXIÓN PERDIDA — sin acceso a internet"
-            )
-            logger.warning(
-                f"  Motivo: {error.__class__.__name__}"
-            )
-            logger.warning(
-                "  El bot reintentará automáticamente cuando vuelva la red."
-            )
-            logger.warning(
-                "  No es necesario reiniciar. 😌"
-            )
-            logger.warning(
-                "=" * 55
-            )
+            logger.warning("=" * 55)
+            logger.warning("  ⚠️  CONEXIÓN PERDIDA — sin acceso a internet")
+            logger.warning(f"  Motivo: {error.__class__.__name__}")
+            logger.warning("  El bot reintentará automáticamente cuando vuelva la red.")
+            logger.warning("  No es necesario reiniciar. 😌")
+            logger.warning("=" * 55)
         # Every 10th retry, give a quiet ping so you know it's still trying
         elif self._consecutive_failures % 10 == 0:
             elapsed = ""
@@ -106,8 +94,7 @@ class ConnectionState:
                 mins = int(delta.total_seconds() // 60)
                 elapsed = f" (~{mins} min sin conexión)"
             logger.info(
-                f"  🔄 Reintentando conexión... "
-                f"(intento {self._consecutive_failures}){elapsed}"
+                f"  🔄 Reintentando conexión... (intento {self._consecutive_failures}){elapsed}"
             )
 
     def mark_recovery(self) -> None:
@@ -119,18 +106,10 @@ class ConnectionState:
                 mins = int(delta.total_seconds() // 60)
                 secs = int(delta.total_seconds() % 60)
                 elapsed = f" (tras {mins} min {secs} s)" if mins > 0 else f" (tras {secs} s)"
-            logger.warning(
-                "=" * 55
-            )
-            logger.warning(
-                f"  ✅ CONEXIÓN RESTABLECIDA{elapsed}"
-            )
-            logger.warning(
-                "  El bot sigue funcionando normalmente."
-            )
-            logger.warning(
-                "=" * 55
-            )
+            logger.warning("=" * 55)
+            logger.warning(f"  ✅ CONEXIÓN RESTABLECIDA{elapsed}")
+            logger.warning("  El bot sigue funcionando normalmente.")
+            logger.warning("=" * 55)
             self._connected = True
             self._consecutive_failures = 0
             self._first_failure_at = None
@@ -151,7 +130,7 @@ class _NetworkErrorFilter(logging.Filter):
         "NetworkError",
         "ConnectError",
         "getaddrinfo failed",
-        "Failed run number",       # retry-loop debug spam
+        "Failed run number",  # retry-loop debug spam
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -234,9 +213,7 @@ async def _connectivity_monitor(
             await app.bot.get_me()
             _connection_state.mark_recovery()
         except (NetworkError, TimedOut):
-            _connection_state.mark_failure(
-                RuntimeError("sin conexión a internet")
-            )
+            _connection_state.mark_failure(RuntimeError("sin conexión a internet"))
         except Exception as e:
             log_exception(
                 "connectivity_check_error",
@@ -294,14 +271,14 @@ def build_application() -> Application[Any, Any, Any, Any, Any, Any]:
     application.add_handler(CommandHandler("pr", pr_command))
     application.add_handler(CommandHandler("update", update_command))
     application.add_handler(CommandHandler("wdir", wdir_command))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    )
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     if not OPENAI_API_KEY:
-        logger.warning("Voice handler registered but OPENAI_API_KEY is not set — "
-                       "voice transcription will be skipped.")
+        logger.warning(
+            "Voice handler registered but OPENAI_API_KEY is not set — "
+            "voice transcription will be skipped."
+        )
 
     return application
 
@@ -343,7 +320,9 @@ async def run_bot() -> None:
         default_model=DEFAULT_MODEL,
     )
     app.bot_data[CONTAINER_KEY] = container
-    logger.info("Service layer initialized (SessionStore + MessageSender + PromptService + AppContainer)")
+    logger.info(
+        "Service layer initialized (SessionStore + MessageSender + PromptService + AppContainer)"
+    )
 
     # ── Shared shutdown event + exit code ───────────────────────────
     # exit_code is a list for mutability (handlers need to set it)
@@ -369,12 +348,16 @@ async def run_bot() -> None:
     if os.getenv("EXPLORE_DB", "").lower() in ("1", "true", "yes"):
         logger.info("Exploring OpenCode DB schema...")
         try:
-            tables = await query_opencode_db("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            tables = await query_opencode_db(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )
             logger.info(f"OpenCode DB tables: {[t.get('name', '?') for t in tables]}")
             for table in tables:
                 tname = table.get("name", "")
                 if tname:
-                    cols = await query_opencode_db(f"PRAGMA table_info({tname})", allowed_pattern=r'^[a-zA-Z0-9_]+$')
+                    cols = await query_opencode_db(
+                        f"PRAGMA table_info({tname})", allowed_pattern=r"^[a-zA-Z0-9_]+$"
+                    )
                     col_names = [c.get("name", "?") for c in cols]
                     logger.info(f"  {tname}: {', '.join(col_names)}")
         except Exception as e:
@@ -394,9 +377,7 @@ async def run_bot() -> None:
     # ── Startup notification to all allowed chats ──────────────────────
     for cid in ALLOWED_CHAT_IDS:
         try:
-            await container.message_sender.send_plain(
-                cid, "Hola, estoy activo y listo \U0001fae1"
-            )
+            await container.message_sender.send_plain(cid, "Hola, estoy activo y listo \U0001fae1")
             logger.info("Startup notification sent to chat %s", cid)
         except Exception as e:
             logger.warning(

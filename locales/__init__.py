@@ -1,13 +1,17 @@
 """I18n: returns the appropriate strings module for the given language."""
+
 from typing import Any
 
 _LOCALES: dict[str, Any] = {}
+
 
 def _load_locales() -> None:
     if _LOCALES:
         return
     from locales import es
+
     _LOCALES["es"] = es
+
 
 def get_strings(lang: str = "es") -> Any:
     _load_locales()

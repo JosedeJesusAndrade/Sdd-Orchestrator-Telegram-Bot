@@ -38,31 +38,36 @@ logger = get_module_logger(__name__)
 
 # ── Domain objects ─────────────────────────────────────────────────────
 
+
 @dataclass
 class SessionInfo:
     """Immutable snapshot of a named session's state.
 
     Returned by all read operations — callers never touch raw dicts.
     """
+
     name: str
     real_id: str | None
     title: str
-    created: str          # ISO 8601
-    last_used: str | None # ISO 8601 or None
+    created: str  # ISO 8601
+    last_used: str | None  # ISO 8601 or None
     prompt_count: int
     is_active: bool = False
 
 
 # ── Domain errors ──────────────────────────────────────────────────────
 
+
 class SessionExistsError(Exception):
     """Raised when trying to create a session that already exists."""
+
 
 class SessionNotFoundError(Exception):
     """Raised when referencing a session that does not exist."""
 
 
 # ── Structural port ────────────────────────────────────────────────────
+
 
 class SessionStorePort(Protocol):
     """Minimal structural contract ``PromptService`` needs from session state.
@@ -71,31 +76,21 @@ class SessionStorePort(Protocol):
     double without inheriting from the concrete production class.
     """
 
-    async def get_model(self, conversation_id: ConversationId) -> str:
-        ...
+    async def get_model(self, conversation_id: ConversationId) -> str: ...
 
-    async def get_active_session(
-        self, conversation_id: ConversationId
-    ) -> SessionInfo | None:
-        ...
+    async def get_active_session(self, conversation_id: ConversationId) -> SessionInfo | None: ...
 
     async def get_chat_setting(
         self, conversation_id: ConversationId, key: str, default: Any = None
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
-    async def increment_prompt_count(
-        self, conversation_id: ConversationId
-    ) -> int:
-        ...
+    async def increment_prompt_count(self, conversation_id: ConversationId) -> int: ...
 
-    async def update_session_id(
-        self, conversation_id: ConversationId, real_id: str
-    ) -> None:
-        ...
+    async def update_session_id(self, conversation_id: ConversationId, real_id: str) -> None: ...
 
 
 # ── Service ────────────────────────────────────────────────────────────
+
 
 class SessionStore:
     """Typed, async-safe session state management.
@@ -139,7 +134,9 @@ class SessionStore:
                 content = self._path.read_text(encoding="utf-8")
                 self._cache = json.loads(content) if content.strip() else {}
             except (FileNotFoundError, json.JSONDecodeError):
-                logger.debug("SessionStore: no valid sessions.json at %s, starting fresh", self._path)
+                logger.debug(
+                    "SessionStore: no valid sessions.json at %s, starting fresh", self._path
+                )
                 self._cache = {}
 
             self._cache_time = asyncio.get_event_loop().time()
@@ -219,8 +216,13 @@ class SessionStore:
             },
         )
         return SessionInfo(
-            name=name, real_id=None, title=name,
-            created=now, last_used=None, prompt_count=0, is_active=True,
+            name=name,
+            real_id=None,
+            title=name,
+            created=now,
+            last_used=None,
+            prompt_count=0,
+            is_active=True,
         )
 
     async def switch_session(self, conversation_id: ConversationId, name: str) -> SessionInfo:
@@ -249,9 +251,13 @@ class SessionStore:
             },
         )
         return SessionInfo(
-            name=name, real_id=s.get("id"), title=s.get("title", name),
-            created=s.get("created", ""), last_used=s.get("last_used"),
-            prompt_count=s.get("prompt_count", 0), is_active=True,
+            name=name,
+            real_id=s.get("id"),
+            title=s.get("title", name),
+            created=s.get("created", ""),
+            last_used=s.get("last_used"),
+            prompt_count=s.get("prompt_count", 0),
+            is_active=True,
         )
 
     async def delete_session(self, conversation_id: ConversationId, name: str) -> str | None:
@@ -310,15 +316,17 @@ class SessionStore:
 
         result: list[SessionInfo] = []
         for name, s in sessions.items():
-            result.append(SessionInfo(
-                name=name,
-                real_id=s.get("id"),
-                title=s.get("title", name),
-                created=s.get("created", ""),
-                last_used=s.get("last_used"),
-                prompt_count=s.get("prompt_count", 0),
-                is_active=(name == active_name),
-            ))
+            result.append(
+                SessionInfo(
+                    name=name,
+                    real_id=s.get("id"),
+                    title=s.get("title", name),
+                    created=s.get("created", ""),
+                    last_used=s.get("last_used"),
+                    prompt_count=s.get("prompt_count", 0),
+                    is_active=(name == active_name),
+                )
+            )
         return result
 
     # ── Public API: model preference ───────────────────────────────
@@ -350,11 +358,7 @@ class SessionStore:
         data = await self._load()
         cid = str(conversation_id)
         active_name = data.get(cid, {}).get("active", DEFAULT_SESSION_NAME)
-        session = (
-            data.setdefault(cid, {})
-            .setdefault("sessions", {})
-            .setdefault(active_name, {})
-        )
+        session = data.setdefault(cid, {}).setdefault("sessions", {}).setdefault(active_name, {})
         session["prompt_count"] = session.get("prompt_count", 0) + 1
         session["last_used"] = datetime.now(UTC).isoformat()
         await self._save(data)
@@ -371,7 +375,9 @@ class SessionStore:
             sessions[active_name]["id"] = real_id
         await self._save(data)
 
-    async def update_session_title(self, conversation_id: ConversationId, name: str, title: str) -> None:
+    async def update_session_title(
+        self, conversation_id: ConversationId, name: str, title: str
+    ) -> None:
         """Update the title of a named session."""
         data = await self._load()
         cid = str(conversation_id)
@@ -380,13 +386,17 @@ class SessionStore:
             sessions[name]["title"] = title
         await self._save(data)
 
-    async def get_chat_setting(self, conversation_id: ConversationId, key: str, default: Any = None) -> Any:
+    async def get_chat_setting(
+        self, conversation_id: ConversationId, key: str, default: Any = None
+    ) -> Any:
         data = await self._load()
         chat_data = data.get(str(conversation_id), {})
         settings = chat_data.get("settings", {})
         return settings.get(key, default)
 
-    async def set_chat_setting(self, conversation_id: ConversationId, key: str, value: object) -> None:
+    async def set_chat_setting(
+        self, conversation_id: ConversationId, key: str, value: object
+    ) -> None:
         data = await self._load()
         cid = str(conversation_id)
         chat_data = data.setdefault(cid, {})

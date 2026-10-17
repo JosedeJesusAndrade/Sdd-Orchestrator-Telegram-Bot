@@ -29,7 +29,8 @@ def _get_container(context: ContextTypes.DEFAULT_TYPE) -> AppContainer:
 async def _run_git_command(workdir: str, *args: str) -> tuple[int, str, str]:
     """Execute a git command and return (returncode, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
-        "git", *args,
+        "git",
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,
@@ -45,6 +46,7 @@ async def _run_git_command(workdir: str, *args: str) -> tuple[int, str, str]:
 def _resolve_gh() -> str:
     """Find gh executable. Tries PATH first, then known Windows install paths."""
     import shutil
+
     candidates = [
         shutil.which("gh"),
         shutil.which("gh.exe"),
@@ -62,7 +64,8 @@ async def _run_gh_command(workdir: str, *args: str) -> tuple[int, str, str]:
     """Execute a gh (GitHub CLI) command."""
     gh_cmd = _resolve_gh()
     proc = await asyncio.create_subprocess_exec(
-        gh_cmd, *args,
+        gh_cmd,
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,
@@ -78,8 +81,8 @@ async def _run_gh_command(workdir: str, *args: str) -> tuple[int, str, str]:
 def _sanitize_branch_name(title: str) -> str:
     """Convert a PR title into a valid git branch name."""
     name = title.lower().strip()
-    name = re.sub(r'[^a-z0-9\s_-]', '', name)
-    name = re.sub(r'\s+', '-', name)
+    name = re.sub(r"[^a-z0-9\s_-]", "", name)
+    name = re.sub(r"\s+", "-", name)
     return name[:50] or "update"
 
 
@@ -144,11 +147,17 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # Step 5: Create PR via GitHub CLI
     ret, out, err = await _run_gh_command(
-        workdir, "pr", "create",
-        "--title", title,
-        "--body", body,
-        "--base", "main",
-        "--head", branch_name,
+        workdir,
+        "pr",
+        "create",
+        "--title",
+        title,
+        "--body",
+        body,
+        "--base",
+        "main",
+        "--head",
+        branch_name,
     )
     if ret != 0:
         await sender.send_plain(chat_id, f"❌ Error creando PR:\n`{err}`")
@@ -163,9 +172,7 @@ async def pr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await sender.send_plain(
         chat_id,
-        f"✅ PR creada exitosamente.\n\n"
-        f"📝 *Título:* {title[:100]}\n"
-        f"🔗 {pr_url or out[:200]}"
+        f"✅ PR creada exitosamente.\n\n📝 *Título:* {title[:100]}\n🔗 {pr_url or out[:200]}",
     )
 
     # Return to main
@@ -186,12 +193,11 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     sender = container.message_sender
 
     await sender.send_plain(
-        chat_id,
-        "🔄 Recibido. Iniciando apagado controlado...\n"
-        "El bot volverá en ~5 segundos."
+        chat_id, "🔄 Recibido. Iniciando apagado controlado...\nEl bot volverá en ~5 segundos."
     )
 
     from utils.logging import get_module_logger
+
     logger = get_module_logger(__name__)
     logger.info(
         "Auto-restart requested",
@@ -224,6 +230,7 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Default parent dir — where all projects live
     from config import OPENCODE_WORKDIR
+
     parent = Path(OPENCODE_WORKDIR)
     if not parent.exists():
         await sender.send_plain(chat_id, f"❌ Directorio no encontrado: `{parent}`")
@@ -247,7 +254,9 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     if not projects:
-        await sender.send_plain(chat_id, "⚠️ No se encontraron proyectos con `.git` en el directorio.")
+        await sender.send_plain(
+            chat_id, "⚠️ No se encontraron proyectos con `.git` en el directorio."
+        )
         return
 
     # Get current workdir
@@ -281,7 +290,9 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             target = projects[matches[0]]
         elif len(matches) > 1:
             match_list = ", ".join(matches[:5])
-            await sender.send_plain(chat_id, f"⚠️ Múltiples coincidencias: {match_list}. Sé más específico.")
+            await sender.send_plain(
+                chat_id, f"⚠️ Múltiples coincidencias: {match_list}. Sé más específico."
+            )
             return
         else:
             await sender.send_plain(chat_id, f"❌ Proyecto no encontrado: `{query}`")
@@ -290,7 +301,5 @@ async def wdir_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     workdir = str(target)
     await store.set_chat_setting(chat_id, "workdir", workdir)
     await sender.send_plain(
-        chat_id,
-        f"✅ Workdir cambiado a:\n`{workdir}`\n\n"
-        f"El próximo prompt usará este proyecto."
+        chat_id, f"✅ Workdir cambiado a:\n`{workdir}`\n\nEl próximo prompt usará este proyecto."
     )

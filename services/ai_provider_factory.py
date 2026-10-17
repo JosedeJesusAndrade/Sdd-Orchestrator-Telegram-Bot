@@ -11,6 +11,7 @@ owns its own backend instance (created by ``PromptService``, which owns the
 per-conversation lifecycle). Multiple providers stay possible: a provider is
 a registered class plus its constructor defaults.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
@@ -22,8 +23,7 @@ if TYPE_CHECKING:
 class ProviderFactoryPort(Protocol):
     """Minimal structural contract ``PromptService`` needs from a factory."""
 
-    def create(self, provider: str | None = None, **kwargs: Any) -> AIBackend:
-        ...
+    def create(self, provider: str | None = None, **kwargs: Any) -> AIBackend: ...
 
 
 class AIProviderFactory:
@@ -32,9 +32,7 @@ class AIProviderFactory:
         self._default_kwargs: dict[str, dict[str, Any]] = {}
         self._default = default_provider
 
-    def register(
-        self, name: str, backend_cls: type, **default_kwargs: Any
-    ) -> None:
+    def register(self, name: str, backend_cls: type, **default_kwargs: Any) -> None:
         """Register a provider class and the kwargs used to build it.
 
         Defaults are merged with (and overridden by) any kwargs passed to
@@ -52,9 +50,7 @@ class AIProviderFactory:
         """
         name = provider or self._default
         if name not in self._providers:
-            raise ValueError(
-                f"Unknown provider '{name}'. Available: {list(self._providers)}"
-            )
+            raise ValueError(f"Unknown provider '{name}'. Available: {list(self._providers)}")
         merged = {**self._default_kwargs.get(name, {}), **kwargs}
         return self._providers[name](**merged)
 

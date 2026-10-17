@@ -6,6 +6,7 @@ frontend that originated it. The default is now the neutral empty string:
 a forgotten label adds NO prefix, while Telegram keeps passing its explicit
 ``"📱 Telegram"`` marker.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +38,10 @@ async def _labeled_prompt(monkeypatch, **kwargs) -> str:
     monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
     backend = OpenCodeCLIBackend("opencode", workdir=".")
     result = await backend.execute(
-        prompt="hello world", model="", session_id=None, **kwargs,
+        prompt="hello world",
+        model="",
+        session_id=None,
+        **kwargs,
     )
     assert result.returncode == 0
     return capture.calls[0][-1]

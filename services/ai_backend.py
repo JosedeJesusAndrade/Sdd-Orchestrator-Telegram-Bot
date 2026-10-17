@@ -7,6 +7,7 @@ IS an AIBackend. No inheritance needed. Supports:
   - OllamaBackend (local HTTP)
   - MockAIBackend (testing)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Protocol, runtime_checkable
 @dataclass
 class AIBackendResult:
     """Unified result from any AI backend."""
+
     stdout: str = ""
     stderr: str = ""
     returncode: int = 0

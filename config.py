@@ -1,4 +1,5 @@
 """Configuration for Telegram-OpenCode Bridge bot."""
+
 import logging
 import logging.handlers
 import os
@@ -158,6 +159,7 @@ OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "300"))
 def resolve_opencode_cmd() -> str:
     """Find opencode executable."""
     import shutil
+
     known_npm_path = os.path.expanduser(r"~\AppData\Roaming\npm\opencode.cmd")
     candidates = [
         ("OPENCODE_CMD env var", os.getenv("OPENCODE_CMD")),
@@ -195,11 +197,13 @@ MODEL_ALIASES = {
     },
 }
 
+
 def resolve_model(alias_or_full: str) -> str:
     for _provider, aliases in MODEL_ALIASES.items():
         if alias_or_full in aliases:
             return aliases[alias_or_full]
     return alias_or_full
+
 
 # ─── Sessions ───
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"
@@ -208,10 +212,10 @@ SESSIONS_PATH = SESSION_DB  # alias for SessionStore
 # ── Constants  ──────────────────────────────────────
 DEFAULT_SESSION_NAME = "default"
 TELEGRAM_MAX_MESSAGE_LENGTH = 4000
-PROGRESS_UPDATE_INTERVAL = 5       # seconds between "procesando..." updates
-CONNECTIVITY_CHECK_INTERVAL = 30   # seconds between connectivity pings
+PROGRESS_UPDATE_INTERVAL = 5  # seconds between "procesando..." updates
+CONNECTIVITY_CHECK_INTERVAL = 30  # seconds between connectivity pings
 CONNECTIVITY_FIRST_CHECK_DELAY = 10  # seconds before first connectivity check
-INTERNAL_SUBPROCESS_TIMEOUT = 10   # seconds for opencode session list / db queries
+INTERNAL_SUBPROCESS_TIMEOUT = 10  # seconds for opencode session list / db queries
 
 # ── DI container key (used by AppContainer injection) ───────────────────
 CONTAINER_KEY = "container"

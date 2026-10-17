@@ -1,4 +1,5 @@
 """Tests for formatter selection: make_formatter + BOT_LOG_FORMAT end-to-end."""
+
 import os
 import subprocess
 import sys
@@ -88,9 +89,7 @@ def test_env_json_handler_emits_json_lines(tmp_path: Path) -> None:
 
     import json
 
-    lines = [
-        line for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
+    lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert lines, "file handler emitted nothing"
     payload = json.loads(lines[-1])
     assert payload["event"] == "probe_json"

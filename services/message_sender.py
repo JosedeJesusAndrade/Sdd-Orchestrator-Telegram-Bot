@@ -32,16 +32,13 @@ logger = get_module_logger(__name__)
 class MessageSenderPort(Protocol):
     """Structural contract for the delivery surface used by TelegramChatView."""
 
-    async def send_formatted(self, chat_id: int, text: str) -> list[MessageInfo]:
-        ...
+    async def send_formatted(self, chat_id: int, text: str) -> list[MessageInfo]: ...
 
-    async def send_plain(self, chat_id: int, text: str) -> MessageInfo | None:
-        ...
+    async def send_plain(self, chat_id: int, text: str) -> MessageInfo | None: ...
 
     async def edit_message(
         self, chat_id: int, message_id: int, text: str
-    ) -> MessageInfo | None:
-        ...
+    ) -> MessageInfo | None: ...
 
 
 class MessageSender:
@@ -106,7 +103,10 @@ class MessageSender:
             return None
 
     async def edit_message(
-        self, chat_id: int, message_id: int, text: str,
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
     ) -> MessageInfo | None:
         """Edit an existing message. Silently deletes on failure.
 
@@ -116,7 +116,9 @@ class MessageSender:
         """
         try:
             return await self._bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text=text,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
             )
         except Exception:
             log_exception(
@@ -126,7 +128,8 @@ class MessageSender:
             )
             try:
                 await self._bot.delete_message(
-                    chat_id=chat_id, message_id=message_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
                 )
             except Exception:
                 log_exception(
@@ -139,7 +142,9 @@ class MessageSender:
     # ── Internal ────────────────────────────────────────────────────
 
     async def _send_mdv2_with_fallback(
-        self, chat_id: int, text: str,
+        self,
+        chat_id: int,
+        text: str,
     ) -> MessageInfo | None:
         """Try MarkdownV2, fall back to stripped plain text.
 
@@ -173,7 +178,7 @@ class MessageSender:
                 module=__name__,
                 level=logging.DEBUG,
             )
-            clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
+            clean = text.replace("*", "").replace("`", "").replace("#", "").replace("_", "")
             try:
                 return await self._bot.send_message(chat_id=chat_id, text=clean)
             except Exception as e:

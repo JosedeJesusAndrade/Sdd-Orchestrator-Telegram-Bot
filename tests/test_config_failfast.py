@@ -3,6 +3,7 @@
 Primary coverage exercises the pure parser. One subprocess test per failure
 mode proves a bad/empty value exits with code 1 WITHOUT killing the runner.
 """
+
 import os
 import subprocess
 import sys

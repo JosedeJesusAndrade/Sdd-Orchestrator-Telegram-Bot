@@ -26,6 +26,7 @@ Why a namespaced logger hierarchy?
   resolves to siblings of `opencode_bot` (not children) and records are
   silently dropped (see #337 verify-report for the regression this fixed).
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -69,9 +70,7 @@ def get_module_logger(name: str | None = None) -> logging.Logger:
 #     encoded in the swallowed logger name. Deliberate: it is the price for
 #     independent one-knob control and keeps swallowed noise out of the
 #     normal module stream.
-def log_exception(
-    event: str, *, module: str, level: int = logging.DEBUG, **fields: object
-) -> None:
+def log_exception(event: str, *, module: str, level: int = logging.DEBUG, **fields: object) -> None:
     """Log a caught-and-recovered exception with traceback into
     `opencode_bot.swallowed.<module>`.
 
@@ -92,9 +91,7 @@ def log_exception(
 
 # ── Request ID context propagation ────────────────────────────────────────
 
-request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "request_id", default="-"
-)
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
 
 
 def new_request_id() -> str:
@@ -128,6 +125,7 @@ class RequestIdFilter(logging.Filter):
 
 # ── Chat ID masking (privacy) ─────────────────────────────────────────────
 
+
 def mask_chat_id(chat_id: int | str) -> str:
     """Partially mask chat ID for log privacy — first 2 and last 2 digits visible.
 
@@ -151,14 +149,35 @@ def mask_chat_id(chat_id: int | str) -> str:
 # Standard LogRecord attributes — copied from the Python logging module docs
 # (https://docs.python.org/3/library/logging.html#logrecord-attributes).
 # We skip these when iterating record.__dict__ to find user-provided extras.
-_STANDARD_RECORD_FIELDS = frozenset({
-    "args", "asctime", "created", "exc_info", "exc_text", "filename",
-    "funcName", "levelname", "levelno", "lineno", "message", "module",
-    "msecs", "msg", "name", "pathname", "process", "processName",
-    "relativeCreated", "stack_info", "thread", "threadName", "taskName",
-    # Our additions — populated by RequestIdFilter or our formatter, never user extras:
-    "request_id",
-})
+_STANDARD_RECORD_FIELDS = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+        "taskName",
+        # Our additions — populated by RequestIdFilter or our formatter, never user extras:
+        "request_id",
+    }
+)
 
 
 def _extract_structured_fields(record: logging.LogRecord) -> dict[str, object]:
@@ -311,6 +330,7 @@ def _format_value(value: object) -> str:
 
 
 # ── JsonFormatter (roadmap item 6) ────────────────────────────────────────
+
 
 class JsonFormatter(logging.Formatter):
     """Render a LogRecord as one JSON line.

@@ -6,6 +6,7 @@ handlers) instead of the `opencode_bot` logger that HAS handlers. The 33
 existing tests didn't catch this because they assert business behavior, not
 log delivery. This test asserts the chain end-to-end.
 """
+
 import logging
 
 

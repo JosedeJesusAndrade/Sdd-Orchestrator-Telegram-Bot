@@ -87,9 +87,10 @@ async def save_session_map_atomic(data: dict[str, Any]) -> None:
     global _session_map_cache, _session_map_cache_time
     loop = asyncio.get_running_loop()
     async with session_lock:
+
         def _write() -> None:
             SESSION_DB.parent.mkdir(parents=True, exist_ok=True)
-            tmp = SESSION_DB.with_suffix('.tmp')
+            tmp = SESSION_DB.with_suffix(".tmp")
             try:
                 tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp.replace(SESSION_DB)  # atomic on most filesystems
@@ -97,6 +98,7 @@ async def save_session_map_atomic(data: dict[str, Any]) -> None:
                 if tmp.exists():
                     tmp.unlink(missing_ok=True)
                 raise
+
         await loop.run_in_executor(None, _write)
         _session_map_cache = data.copy()
         _session_map_cache_time = time.time()
@@ -118,16 +120,20 @@ async def load_session_map_safe() -> dict[str, Any]:
 def parse_opencode_session_list(output: str) -> list[dict[str, Any]]:
     """Parse 'opencode session list' output into list of {id, title, updated}."""
     sessions = []
-    for line in output.strip().split('\n'):
+    for line in output.strip().split("\n"):
         # Format: ses_XXX  Title (with spaces)   HH:MM
         # or:      ses_XXX  Title                HH:MM · DD/M/YYYY
-        match = re.match(r'(ses_\w+)\s{2,}(.+?)\s{2,}(\d{2}:\d{2}(?:\s·\s\d{1,2}/\d{1,2}/\d{4})?)', line)
+        match = re.match(
+            r"(ses_\w+)\s{2,}(.+?)\s{2,}(\d{2}:\d{2}(?:\s·\s\d{1,2}/\d{1,2}/\d{4})?)", line
+        )
         if match:
-            sessions.append({
-                "id": match.group(1),
-                "title": match.group(2).strip(),
-                "updated": match.group(3).strip(),
-            })
+            sessions.append(
+                {
+                    "id": match.group(1),
+                    "title": match.group(2).strip(),
+                    "updated": match.group(3).strip(),
+                }
+            )
     # O5: Warn if parser returned nothing but input had content (format may have changed)
     if not sessions and output.strip():
         logger.warning(
@@ -144,7 +150,10 @@ async def fetch_opencode_sessions() -> list[dict[str, Any]]:
     """Run 'opencode session list' and parse output. Cached with TTL (P4)."""
     global _opencode_sessions_cache, _opencode_sessions_cache_time
     now = time.time()
-    if _opencode_sessions_cache is not None and (now - _opencode_sessions_cache_time) < SESSION_LIST_CACHE_TTL:
+    if (
+        _opencode_sessions_cache is not None
+        and (now - _opencode_sessions_cache_time) < SESSION_LIST_CACHE_TTL
+    ):
         return _opencode_sessions_cache
 
     try:
@@ -158,7 +167,7 @@ async def fetch_opencode_sessions() -> list[dict[str, Any]]:
                 encoding="utf-8",
                 errors="replace",
                 timeout=INTERNAL_SUBPROCESS_TIMEOUT,
-            )
+            ),
         )
 
         if result.returncode != 0:
@@ -238,12 +247,15 @@ async def update_session(chat_id: int, session_name: str, **fields: Any) -> None
     await save_session_map_atomic(smap)
 
 
-async def add_session(chat_id: int, session_name: str, real_id: str | None = None, title: str = "") -> None:
+async def add_session(
+    chat_id: int, session_name: str, real_id: str | None = None, title: str = ""
+) -> None:
     """Add a new named session for a chat."""
     smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     sessions = chat_data.setdefault("sessions", {})
     from datetime import datetime
+
     sessions[session_name] = {
         "id": real_id,
         "title": title or session_name,

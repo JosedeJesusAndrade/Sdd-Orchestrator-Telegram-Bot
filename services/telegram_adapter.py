@@ -2,6 +2,7 @@
 
 This is the ONLY class in the entire project that imports telegram.Bot.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,7 +23,10 @@ class TelegramAdapter:
         self._bot = bot
 
     async def send_message(
-        self, chat_id: int, text: str, parse_mode: str | None = None,
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
     ) -> MessageInfo:
         """Pure transport passthrough — one Telegram call, no formatting policy.
 
@@ -33,16 +37,23 @@ class TelegramAdapter:
         for both the formatted and the plain attempt.
         """
         msg = await self._bot.send_message(
-            chat_id=chat_id, text=text, parse_mode=parse_mode,
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
         )
         return MessageInfo(chat_id=chat_id, message_id=msg.message_id, text=msg.text or text)
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str,
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
     ) -> MessageInfo | None:
         try:
             msg = await self._bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text=text,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
             )
             # PTB returns ``True`` instead of a ``Message`` for inline-message
             # edits. We always pass chat_id + message_id (regular messages), so

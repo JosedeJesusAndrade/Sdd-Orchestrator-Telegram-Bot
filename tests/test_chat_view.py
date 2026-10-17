@@ -21,6 +21,7 @@ from services.telegram_chat_view import TelegramChatView
 
 # ── Fakes (core, frontend-agnostic) ────────────────────────────────────
 
+
 class FakeStore:
     def __init__(self, settings: dict | None = None) -> None:
         self.increments = 0
@@ -29,12 +30,14 @@ class FakeStore:
     async def get_model(self, conversation_id: ConversationId) -> str:
         return "test/model"
 
-    async def get_active_session(
-        self, conversation_id: ConversationId
-    ) -> SessionInfo | None:
+    async def get_active_session(self, conversation_id: ConversationId) -> SessionInfo | None:
         return SessionInfo(
-            name="default", real_id=None, title="default",
-            created="", last_used=None, prompt_count=0,
+            name="default",
+            real_id=None,
+            title="default",
+            created="",
+            last_used=None,
+            prompt_count=0,
         )
 
     async def get_chat_setting(
@@ -46,9 +49,7 @@ class FakeStore:
         self.increments += 1
         return self.increments
 
-    async def update_session_id(
-        self, conversation_id: ConversationId, real_id: str
-    ) -> None:
+    async def update_session_id(self, conversation_id: ConversationId, real_id: str) -> None:
         return None
 
 
@@ -60,8 +61,12 @@ class FakeBackend:
         self.timeout: int | None = None
 
     async def execute(
-        self, prompt: str, model: str, session_id: str | None,
-        agent: str | None = None, workdir: str | None = None,
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None,
+        agent: str | None = None,
+        workdir: str | None = None,
         source_label: str = "",
         timeout: int | None = None,
     ) -> AIBackendResult:
@@ -124,6 +129,7 @@ class FakeChatView:
 
 
 # ── PromptService lifecycle (no PTB anywhere) ─────────────────────────
+
 
 async def test_success_lifecycle_start_update_send_finish(monkeypatch) -> None:
     monkeypatch.setattr("services.prompt_service.PROGRESS_UPDATE_INTERVAL", 0.01)
@@ -236,7 +242,9 @@ async def test_string_conversation_id_end_to_end(tmp_path) -> None:
     service = PromptService(session_store=store, provider_factory=FakeFactory(backend))
 
     result = await service.execute(
-        conversation_id="flet-user-42", prompt_text="hi", view=view,
+        conversation_id="flet-user-42",
+        prompt_text="hi",
+        view=view,
     )
 
     assert result == "ok"
@@ -251,6 +259,7 @@ async def test_string_conversation_id_end_to_end(tmp_path) -> None:
 
 
 # ── F10: per-chat timeout is passed through to the backend ────────────
+
 
 async def test_per_chat_timeout_is_passed_to_backend() -> None:
     """F10: the per-chat ``/config timeout`` setting must reach the backend.
@@ -288,6 +297,7 @@ async def test_timeout_falls_back_to_global_when_unset() -> None:
 
 
 # ── TelegramChatView adapter (delegation only) ────────────────────────
+
 
 class FakeSender:
     def __init__(self, formatted_result: list[MessageInfo] | None = None) -> None:
@@ -401,6 +411,7 @@ async def test_telegram_progress_placeholder_failure_logs_warning() -> None:
 
 # ── F3: per-conversation backend isolation ────────────────────────────
 
+
 class _RecordingBackend:
     """Backend registered in the REAL factory; records cancel() targeting.
 
@@ -420,8 +431,12 @@ class _RecordingBackend:
         _RecordingBackend.instances.append(self)
 
     async def execute(
-        self, prompt: str, model: str, session_id: str | None,
-        agent: str | None = None, workdir: str | None = None,
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None,
+        agent: str | None = None,
+        workdir: str | None = None,
         source_label: str = "",
         timeout: int | None = None,
     ) -> AIBackendResult:
@@ -507,6 +522,7 @@ async def test_f3_backend_released_after_execution() -> None:
 
 # ── F8: partial delivery is a failure + placeholder never sticks ──────
 
+
 class _PartialDeliveryBot:
     """BotPort fake: delivers the first fragment, fails the second one.
 
@@ -520,7 +536,10 @@ class _PartialDeliveryBot:
         self.edits: list[str] = []
 
     async def send_message(
-        self, chat_id: int, text: str, parse_mode: str | None = None,
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
     ) -> MessageInfo:
         if "parte 2/2" in text:
             raise RuntimeError("transport failure")
@@ -528,7 +547,10 @@ class _PartialDeliveryBot:
         return MessageInfo(chat_id=chat_id, message_id=len(self.sent), text=text)
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str,
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
     ) -> MessageInfo:
         self.edits.append(text)
         return MessageInfo(chat_id=chat_id, message_id=message_id, text=text)
@@ -578,10 +600,7 @@ async def test_f8_partial_delivery_reports_failure_and_logs() -> None:
 
     assert ok is False, "a partially delivered response must NOT report success"
 
-    partial = [
-        r for r in probe.records
-        if r.__dict__.get("event") == "delivery_partial"
-    ]
+    partial = [r for r in probe.records if r.__dict__.get("event") == "delivery_partial"]
     assert len(partial) == 1, "partial delivery must emit exactly one event"
     assert partial[0].__dict__["sent"] == 1
     assert partial[0].__dict__["total"] == 2
@@ -603,13 +622,14 @@ async def test_f8_partial_delivery_leaves_placeholder_in_error_state() -> None:
 
     backend = FakeBackend(AIBackendResult(stdout=text, returncode=0))
     service = PromptService(
-        session_store=FakeStore(), provider_factory=FakeFactory(backend),
+        session_store=FakeStore(),
+        provider_factory=FakeFactory(backend),
     )
 
     await service.execute(conversation_id=7, prompt_text="hi", view=view)
 
     assert bot.edits, "the placeholder must be edited to a terminal state"
     assert bot.edits[-1].startswith("\u26a0\ufe0f"), bot.edits[-1]
-    assert all(
-        "OpenCode procesando" not in e for e in bot.edits
-    ), "placeholder must not remain in the processing state"
+    assert all("OpenCode procesando" not in e for e in bot.edits), (
+        "placeholder must not remain in the processing state"
+    )

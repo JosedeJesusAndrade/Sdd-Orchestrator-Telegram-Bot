@@ -50,6 +50,7 @@ def authorized(
       - DEBUG event=handler_exit    at handler end (with duration_ms)
       - WARNING event=unauthorized  if chat_id not in ALLOWED_CHAT_IDS
     """
+
     @functools.wraps(handler)
     async def wrapper(
         update: Update,

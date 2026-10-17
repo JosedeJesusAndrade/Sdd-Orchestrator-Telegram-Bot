@@ -5,6 +5,7 @@ the #337/#338 regression class: a logger resolving outside the `opencode_bot`
 hierarchy is silently dropped. They also cover the one-knob silence mechanism
 and the field shape of a representative inline weak-log fix.
 """
+
 import logging
 from typing import Any
 
@@ -39,9 +40,7 @@ def test_swallowed_record_reaches_namespace() -> None:
         try:
             _raise()
         except RuntimeError:
-            log_exception(
-                "boom_event", module="tests.swallowed", level=logging.DEBUG, k="v"
-            )
+            log_exception("boom_event", module="tests.swallowed", level=logging.DEBUG, k="v")
 
         assert len(probe.records) == 1, "swallowed record did not reach namespace"
         record = probe.records[0]
@@ -65,9 +64,7 @@ def test_level_is_honored() -> None:
         try:
             _raise()
         except RuntimeError:
-            log_exception(
-                "warn_event", module="tests.levels", level=logging.WARNING
-            )
+            log_exception("warn_event", module="tests.levels", level=logging.WARNING)
 
         assert len(probe.records) == 1
         assert probe.records[0].levelno == logging.WARNING
@@ -88,9 +85,7 @@ def test_one_knob_silences_swallowed_tree() -> None:
         try:
             _raise()
         except RuntimeError:
-            log_exception(
-                "muted_event", module="tests.muted", level=logging.DEBUG
-            )
+            log_exception("muted_event", module="tests.muted", level=logging.DEBUG)
 
         assert parent_probe.records == []
     finally:
@@ -113,8 +108,7 @@ def test_configured_handlers_pass_debug_end_to_end() -> None:
     handlers = config.logger.handlers
     assert handlers, "config.logger has no handlers attached"
     assert all(h.level <= logging.DEBUG for h in handlers), (
-        "handler filters DEBUG: "
-        f"{[(type(h).__name__, h.level) for h in handlers]}"
+        f"handler filters DEBUG: {[(type(h).__name__, h.level) for h in handlers]}"
     )
 
     # Delivery proof without writing to the real bot.log: temporarily detach the
@@ -128,9 +122,7 @@ def test_configured_handlers_pass_debug_end_to_end() -> None:
         try:
             _raise()
         except RuntimeError:
-            log_exception(
-                "probe_event", module="tests.handler_level", level=logging.DEBUG
-            )
+            log_exception("probe_event", module="tests.handler_level", level=logging.DEBUG)
 
         assert len(probe.records) == 1, "DEBUG swallowed record dropped by handlers"
         assert probe.records[0].levelno == logging.DEBUG

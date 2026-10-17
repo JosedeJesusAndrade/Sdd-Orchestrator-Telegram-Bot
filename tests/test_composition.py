@@ -9,6 +9,7 @@ Covers:
   - ``start_time`` is honored / defaults to ~now.
   - ``services.composition`` is PTB-free (never imports ``telegram``).
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -29,6 +30,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ── Shape / typing ────────────────────────────────────────────────────
+
 
 def test_build_prompt_stack_returns_core_stack(tmp_path: Path) -> None:
     core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
@@ -58,6 +60,7 @@ def test_core_stack_is_frozen(tmp_path: Path) -> None:
 
 # ── Provider registration (previously-untested coverage gap) ───────────
 
+
 def test_opencode_provider_is_registered(tmp_path: Path) -> None:
     core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
 
@@ -76,10 +79,9 @@ def test_default_provider_resolves_to_opencode_backend(tmp_path: Path) -> None:
 
 # ── start_time ownership ──────────────────────────────────────────────
 
+
 def test_explicit_start_time_is_honored(tmp_path: Path) -> None:
-    core = build_prompt_stack(
-        sessions_path=tmp_path / "sessions.json", start_time=123.0
-    )
+    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json", start_time=123.0)
 
     assert core.start_time == 123.0
 
@@ -94,14 +96,14 @@ def test_start_time_defaults_to_now(tmp_path: Path) -> None:
 
 # ── PTB-free guarantee ────────────────────────────────────────────────
 
+
 def test_composition_module_is_ptb_free() -> None:
     """Importing the composition root in a clean interpreter must not pull in
     ``telegram``. Uses a subprocess because this test session already imports
     PTB (other test modules), which would otherwise pollute ``sys.modules``.
     """
     script = (
-        "import services.composition, sys;"
-        " print('PTB_FREE=' + str('telegram' not in sys.modules))"
+        "import services.composition, sys; print('PTB_FREE=' + str('telegram' not in sys.modules))"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],

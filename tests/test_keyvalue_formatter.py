@@ -4,6 +4,7 @@ Also covers the traceback-rendering fix: format() replicates the stdlib
 exc_text/stack_info tail so log_exception(..., exc_info=True) records actually
 carry their traceback into the sink.
 """
+
 import logging
 import sys
 
@@ -13,8 +14,13 @@ from utils.logging import KeyValueFormatter
 def _capture(formatter: KeyValueFormatter, level: int, msg: str, **extra) -> str:
     """Emit one record and return the formatted output."""
     record = logging.LogRecord(
-        name="test", level=level, pathname=__file__, lineno=0,
-        msg=msg, args=(), exc_info=None,
+        name="test",
+        level=level,
+        pathname=__file__,
+        lineno=0,
+        msg=msg,
+        args=(),
+        exc_info=None,
     )
     for k, v in extra.items():
         setattr(record, k, v)
@@ -23,8 +29,9 @@ def _capture(formatter: KeyValueFormatter, level: int, msg: str, **extra) -> str
 
 def test_output_with_extras_renders_key_value() -> None:
     fmt = KeyValueFormatter("%(levelname)s %(name)s: %(message)s")
-    out = _capture(fmt, logging.INFO, "Session created",
-                   event="session_created", session_name="foo")
+    out = _capture(
+        fmt, logging.INFO, "Session created", event="session_created", session_name="foo"
+    )
     assert "event=session_created" in out
     assert "session_name=foo" in out
     assert "Session created" in out
@@ -43,8 +50,9 @@ def test_chat_id_is_always_masked() -> None:
     assert "8664220427" not in out1, f"raw chat_id leaked: {out1}"
     assert "chat_id_masked=" in out1
 
-    out2 = _capture(fmt, logging.INFO, "msg", event="x",
-                    chat_id=8664220427, chat_id_masked="CALLER_PRE_MASKED")
+    out2 = _capture(
+        fmt, logging.INFO, "msg", event="x", chat_id=8664220427, chat_id_masked="CALLER_PRE_MASKED"
+    )
     assert "8664220427" not in out2, f"raw chat_id leaked even when masked was passed: {out2}"
     assert "chat_id_masked=CALLER_PRE_MASKED" in out2, (
         "the caller's pre-masked value should be kept verbatim when both "
@@ -62,8 +70,13 @@ def test_string_chat_id_is_also_masked() -> None:
 def _exception_record(msg: str = "boom", **extra) -> logging.LogRecord:
     """Build an ERROR record carrying a real exc_info tuple."""
     record = logging.LogRecord(
-        name="test", level=logging.ERROR, pathname=__file__, lineno=0,
-        msg=msg, args=(), exc_info=None,
+        name="test",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=0,
+        msg=msg,
+        args=(),
+        exc_info=None,
     )
     for k, v in extra.items():
         setattr(record, k, v)
@@ -88,7 +101,7 @@ def test_traceback_fix_keeps_key_value_enrichment() -> None:
     out = fmt.format(_exception_record("boom", event="probe_boom", k="v"))
     assert 'event=probe_boom k=v "boom"' in out, f"enrichment lost: {out!r}"
     assert "Traceback" in out
-    assert out.index('event=probe_boom') < out.index("Traceback"), (
+    assert out.index("event=probe_boom") < out.index("Traceback"), (
         "the key=value line must precede the traceback tail"
     )
 
@@ -102,8 +115,13 @@ def test_no_traceback_when_exc_info_absent() -> None:
 def test_stack_info_tail_is_rendered() -> None:
     fmt = KeyValueFormatter("%(levelname)s %(name)s: %(message)s")
     record = logging.LogRecord(
-        name="test", level=logging.INFO, pathname=__file__, lineno=0,
-        msg="stacked", args=(), exc_info=None,
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=0,
+        msg="stacked",
+        args=(),
+        exc_info=None,
     )
     record.stack_info = "Stack (most recent call last):\n  probe"
     out = fmt.format(record)
@@ -124,6 +142,7 @@ def test_multi_handler_no_duplication() -> None:
         def __init__(self, sink: list[str]) -> None:
             super().__init__()
             self.sink = sink
+
         def emit(self, record: logging.LogRecord) -> None:
             self.sink.append(fmt.format(record))
 

@@ -6,6 +6,7 @@ timeout. ``execute`` now accepts a per-call ``timeout`` and uses it for the
 ``asyncio.wait_for`` deadline AND for the timeout event/error text, so the
 effective timeout is truthful.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +38,10 @@ async def _run(monkeypatch, *, ctor_timeout: int, call_timeout: int | None):
 
     backend = OpenCodeCLIBackend("opencode", workdir=".", timeout=ctor_timeout)
     await backend.execute(
-        prompt="x", model="m", session_id=None, timeout=call_timeout,
+        prompt="x",
+        model="m",
+        session_id=None,
+        timeout=call_timeout,
     )
     return seen["timeout"]
 
@@ -65,7 +69,10 @@ async def test_timeout_result_reports_effective_timeout(monkeypatch) -> None:
     backend.cancel = lambda: None  # type: ignore[method-assign]
 
     result = await backend.execute(
-        prompt="x", model="m", session_id=None, timeout=5,
+        prompt="x",
+        model="m",
+        session_id=None,
+        timeout=5,
     )
 
     assert result.timed_out is True

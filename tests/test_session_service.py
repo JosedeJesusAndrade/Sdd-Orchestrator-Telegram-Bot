@@ -7,11 +7,13 @@ the B14 cache-invalidation contract for every mutating operation.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, cast
 
 import pytest
 
 from config import OPENCODE_CMD
+from services.agent_sessions import ConversationSummary
 from services.session_service import (
     DiscoveredSession,
     InvalidSessionNameError,
@@ -35,6 +37,30 @@ def _session(
         created="2026-05-19T00:00:00+00:00",
         last_used=None,
         prompt_count=prompt_count,
+    )
+
+
+class FakeCatalog:
+    """Catalog double: only the real ids in ``sessions`` exist."""
+
+    def __init__(self, sessions: list[ConversationSummary] | None = None) -> None:
+        self.by_id = {s.real_id: s for s in sessions or []}
+        self.calls: list[str] = []
+
+    async def get_session(self, real_id: str) -> ConversationSummary | None:
+        self.calls.append(real_id)
+        return self.by_id.get(real_id)
+
+
+def _summary(real_id: str, title: str = "Adopted title") -> ConversationSummary:
+    return ConversationSummary(
+        real_id=real_id,
+        title=title,
+        created_at=1,
+        updated_at=2,
+        message_count=0,
+        directory="C:/project",
+        agent="build",
     )
 
 
@@ -249,6 +275,55 @@ async def test_adopt_duplicate_name_raises_without_mutation(
     assert invalidations == []
 
 
+async def test_adopt_with_catalog_accepts_sessions_outside_the_cli_list(
+    monkeypatch: pytest.MonkeyPatch, invalidations: list[bool]
+) -> None:
+    store = FakeStore()
+    catalog = FakeCatalog([_summary("ses_outside", title="Older session")])
+    fetch_calls = _patch_fetch(monkeypatch, [])
+
+    service = SessionService(cast(SessionStore, store), catalog=catalog)
+    await service.adopt(42, "ses_outside", "old-one")
+
+    assert catalog.calls == ["ses_outside"]
+    assert fetch_calls == []
+    assert store.created == [(42, "old-one")]
+    assert store.updated_ids == [(42, "ses_outside")]
+    assert store.updated_titles == [(42, "old-one", "Older session")]
+    assert invalidations == [True]
+
+
+async def test_adopt_with_catalog_unknown_id_raises_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, invalidations: list[bool]
+) -> None:
+    store = FakeStore()
+    catalog = FakeCatalog([])
+    fetch_calls = _patch_fetch(monkeypatch, [])
+
+    service = SessionService(cast(SessionStore, store), catalog=catalog)
+    with pytest.raises(SessionNotDiscoveredError) as exc:
+        await service.adopt(42, "ses_missing", "mine")
+
+    assert exc.value.real_id == "ses_missing"
+    assert catalog.calls == ["ses_missing"]
+    assert fetch_calls == []
+    assert store.created == []
+    assert invalidations == []
+
+
+async def test_adopt_without_catalog_keeps_the_cli_validation(
+    monkeypatch: pytest.MonkeyPatch, invalidations: list[bool]
+) -> None:
+    store = FakeStore()
+    fetch_calls = _patch_fetch(monkeypatch, [{"id": "ses_from_cli", "title": "From CLI"}])
+
+    await _service(store).adopt(42, "ses_from_cli", "mine")
+
+    assert fetch_calls == [True]
+    assert store.created == [(42, "mine")]
+    assert store.updated_titles == [(42, "mine", "From CLI")]
+
+
 # ── delete ─────────────────────────────────────────────────────────────
 
 
@@ -322,14 +397,21 @@ async def test_delete_swallows_opencode_cleanup_failure(
 # ── enrich ─────────────────────────────────────────────────────────────
 
 
-async def test_enrich_returns_db_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    queries: list[tuple[str, str | None]] = []
+async def test_enrich_uses_real_columns_and_normalizes_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries: list[tuple[str, dict[str, Any]]] = []
 
-    async def fake_query(sql: str, allowed_pattern: str | None = None) -> list[dict[str, Any]]:
-        queries.append((sql, allowed_pattern))
+    async def fake_query(sql: str, **kwargs: Any) -> list[dict[str, Any]]:
+        queries.append((sql, kwargs))
         if "COUNT(*)" in sql:
             return [{"count": 12}]
-        return [{"created_at": "2026-05-19T00:00:00Z", "model": "deepseek/flash"}]
+        return [
+            {
+                "time_created": 1779148800000,
+                "model": '{"id":"deepseek-v4-pro","providerID":"deepseek","variant":"max"}',
+            }
+        ]
 
     monkeypatch.setattr("services.session_service.query_opencode_db", fake_query)
 
@@ -337,20 +419,56 @@ async def test_enrich_returns_db_fields(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert data == {
         "message_count": 12,
-        "created_at": "2026-05-19T00:00:00Z",
-        "model": "deepseek/flash",
+        "created_at": "2026-05-19T00:00:00+00:00",
+        "model": "deepseek/deepseek-v4-pro",
     }
     assert len(queries) == 2
-    assert all(pattern is not None for _, pattern in queries)
+    session_sql = next(sql for sql, _ in queries if "FROM session" in sql)
+    assert "time_created" in session_sql
+    assert "created_at" not in session_sql
+    assert all(kwargs["raise_on_error"] is True for _, kwargs in queries)
 
 
 async def test_enrich_without_db_rows_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_query(sql: str, allowed_pattern: str | None = None) -> list[dict[str, Any]]:
+    async def fake_query(sql: str, **kwargs: Any) -> list[dict[str, Any]]:
         return []
 
     monkeypatch.setattr("services.session_service.query_opencode_db", fake_query)
 
     assert await _service(FakeStore()).enrich("ses_123") == {}
+
+
+async def test_enrich_tolerates_a_null_or_unparseable_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_query(sql: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if "COUNT(*)" in sql:
+            return [{"count": 1}]
+        return [{"time_created": None, "model": "not-json"}]
+
+    monkeypatch.setattr("services.session_service.query_opencode_db", fake_query)
+
+    data = await _service(FakeStore()).enrich("ses_123")
+
+    assert data == {"message_count": 1, "model": "not-json"}
+
+
+async def test_enrich_tolerates_a_model_without_provider_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_query(sql: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if "COUNT(*)" in sql:
+            return [{"count": 1}]
+        return [{"time_created": 0, "model": '{"variant":"max"}'}]
+
+    monkeypatch.setattr("services.session_service.query_opencode_db", fake_query)
+
+    data = await _service(FakeStore()).enrich("ses_123")
+
+    assert data == {
+        "message_count": 1,
+        "created_at": "1970-01-01T00:00:00+00:00",
+    }
 
 
 @pytest.mark.parametrize("real_id", [None, "", "bad id", "bad-id", "drop;table"])
@@ -359,7 +477,7 @@ async def test_enrich_skips_ids_that_fail_the_db_pattern(
 ) -> None:
     calls: list[str] = []
 
-    async def fake_query(sql: str, allowed_pattern: str | None = None) -> list[dict[str, Any]]:
+    async def fake_query(sql: str, **kwargs: Any) -> list[dict[str, Any]]:
         calls.append(sql)
         return []
 
@@ -369,13 +487,27 @@ async def test_enrich_skips_ids_that_fail_the_db_pattern(
     assert calls == []
 
 
-async def test_enrich_swallows_db_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def failing_query(sql: str, allowed_pattern: str | None = None) -> list[dict[str, Any]]:
+async def test_enrich_swallows_db_errors_at_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def failing_query(sql: str, **kwargs: Any) -> list[dict[str, Any]]:
         raise RuntimeError("db down")
 
+    logged: list[dict[str, Any]] = []
+
+    def fake_log(event: str, **fields: Any) -> None:
+        logged.append({"event": event, **fields})
+
     monkeypatch.setattr("services.session_service.query_opencode_db", failing_query)
+    monkeypatch.setattr("services.session_service.log_exception", fake_log)
 
     assert await _service(FakeStore()).enrich("ses_123") == {}
+    assert logged == [
+        {
+            "event": "oc_db_enrich_failed",
+            "module": "services.session_service",
+            "level": logging.WARNING,
+            "real_id": "ses_123",
+        }
+    ]
 
 
 # ── create / switch (B14 cache invalidation) ───────────────────────────

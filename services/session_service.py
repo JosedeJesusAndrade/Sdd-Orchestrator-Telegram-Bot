@@ -13,9 +13,11 @@ Design decisions (design ``sdd/flet-preparation/design`` #426):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from config import INTERNAL_SUBPROCESS_TIMEOUT, OPENCODE_CMD
@@ -24,6 +26,7 @@ from persistence.sessions import (
     fetch_opencode_sessions,
     invalidate_opencode_sessions_cache,
 )
+from services.agent_sessions import SessionCatalog, is_valid_real_id
 from services.session_store import (
     SessionExistsError,
     SessionInfo,
@@ -37,7 +40,46 @@ if TYPE_CHECKING:
 logger = get_module_logger(__name__)
 
 _SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,30}$")
-_DB_ID_PATTERN = r"^[a-zA-Z0-9_]+$"
+
+
+def _ms_to_iso(value: object) -> str | None:
+    """Convert an epoch-millisecond value to ISO 8601 UTC, best-effort."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        millis = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    try:
+        return datetime.fromtimestamp(millis / 1000, tz=UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _normalize_model(value: object) -> str | None:
+    """Render the stored JSON model text as ``providerID/id``."""
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        parsed: object = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return text
+
+    if isinstance(parsed, dict):
+        provider = parsed.get("providerID")
+        model_id = parsed.get("id")
+        if isinstance(provider, str) and isinstance(model_id, str) and provider and model_id:
+            return f"{provider}/{model_id}"
+        return None
+
+    return str(parsed)
 
 
 @dataclass(frozen=True)
@@ -78,8 +120,14 @@ class InvalidSessionNameError(ValueError):
 class SessionService:
     """Session operations shared by every frontend."""
 
-    def __init__(self, session_store: SessionStore) -> None:
+    def __init__(
+        self,
+        session_store: SessionStore,
+        *,
+        catalog: SessionCatalog | None = None,
+    ) -> None:
         self._store = session_store
+        self._catalog = catalog
 
     async def create(self, conversation_id: ConversationId, name: str) -> SessionInfo:
         """Create a named session and invalidate the discovery cache."""
@@ -181,32 +229,35 @@ class SessionService:
     async def enrich(self, real_id: str | None) -> dict[str, Any]:
         """Query OpenCode's DB for message count / created_at / model."""
         data: dict[str, Any] = {}
-        if not real_id or not re.match(_DB_ID_PATTERN, real_id):
+        if not real_id or not is_valid_real_id(real_id):
             return data
 
         try:
             msg_rows = await query_opencode_db(
                 f"SELECT COUNT(*) as count FROM message WHERE session_id = '{real_id}'",
-                allowed_pattern=_DB_ID_PATTERN,
+                raise_on_error=True,
             )
             if msg_rows:
                 data["message_count"] = msg_rows[0].get("count", "?")
 
             session_rows = await query_opencode_db(
-                f"SELECT created_at, model FROM session WHERE id = '{real_id}'",
-                allowed_pattern=_DB_ID_PATTERN,
+                f"SELECT time_created, model FROM session WHERE id = '{real_id}'",
+                raise_on_error=True,
             )
             if session_rows:
                 row = session_rows[0]
-                if row.get("created_at"):
-                    data["created_at"] = row["created_at"]
-                if row.get("model"):
-                    data["model"] = row["model"]
+                created_at = _ms_to_iso(row.get("time_created"))
+                if created_at:
+                    data["created_at"] = created_at
+                model = _normalize_model(row.get("model"))
+                if model:
+                    data["model"] = model
         except Exception:
             log_exception(
                 "oc_db_enrich_failed",
                 module=__name__,
-                level=logging.DEBUG,
+                level=logging.WARNING,
+                real_id=real_id,
             )
         return data
 
@@ -221,20 +272,26 @@ class SessionService:
         if not _SESSION_NAME_PATTERN.match(name):
             raise InvalidSessionNameError(name)
 
-        oc_sessions = await fetch_opencode_sessions()
-        oc_by_id = {s["id"]: s for s in oc_sessions}
+        if self._catalog is not None:
+            summary = await self._catalog.get_session(real_id)
+            if summary is None:
+                raise SessionNotDiscoveredError(real_id)
+            title = summary.title
+        else:
+            oc_sessions = await fetch_opencode_sessions()
+            oc_by_id = {s["id"]: s for s in oc_sessions}
 
-        if real_id not in oc_by_id:
-            raise SessionNotDiscoveredError(real_id)
+            if real_id not in oc_by_id:
+                raise SessionNotDiscoveredError(real_id)
+            title = oc_by_id[real_id].get("title", name)
 
         existing = await self._store.list_sessions(conversation_id)
         if any(s.name == name for s in existing):
             raise SessionExistsError(f"Session '{name}' already exists")
 
-        oc_info = oc_by_id[real_id]
         await self._store.create_session(conversation_id, name)
         await self._store.update_session_id(conversation_id, real_id)
-        await self._store.update_session_title(conversation_id, name, oc_info.get("title", name))
+        await self._store.update_session_title(conversation_id, name, title)
         invalidate_opencode_sessions_cache()
 
         logger.info(

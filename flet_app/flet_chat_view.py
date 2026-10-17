@@ -10,7 +10,7 @@ only decides *where* rendered turns go (the conversation column).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Literal
 
 import flet as ft
@@ -21,9 +21,43 @@ from flet_app.components.message_bubble import (
     user_message,
 )
 from flet_app.core.design_system import DS
+from services.agent_sessions import Message
 from services.chat_view import ChatView, ProgressHandle
 
 MessageRole = Literal["user", "assistant"]
+
+_EMPTY_HISTORY_TEXT = "Esta conversación no tiene mensajes de texto para mostrar."
+
+
+def render_history(column: ft.Column, messages: Iterable[Message]) -> int:
+    """Clear ``column`` and render stored messages with the chat atoms.
+
+    ``Message.role == "user"`` gets the user bubble; every other role renders
+    as assistant markdown. Blank text is skipped; an all-blank history leaves
+    one muted placeholder so the screen is never empty. Returns the number of
+    rendered turns.
+    """
+    column.controls.clear()
+    rendered = 0
+    for message in messages:
+        text = (message.text or "").strip()
+        if not text:
+            continue
+        content = build_markdown(text)
+        bubble = user_message(content) if message.role == "user" else assistant_message(content)
+        column.controls.append(bubble)
+        rendered += 1
+
+    if rendered == 0:
+        placeholder = ft.Text(
+            value=_EMPTY_HISTORY_TEXT,
+            size=DS.typography.small_size,
+            color=DS.colors.text_secondary,
+            italic=True,
+        )
+        column.controls.append(assistant_message(placeholder))
+
+    return rendered
 
 
 class FletProgressHandle(ProgressHandle):

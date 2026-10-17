@@ -31,7 +31,12 @@ def build_markdown(value: str) -> ft.Markdown:
 
 
 def user_message(content: ft.Control) -> ft.Control:
-    """Right-aligned surface bubble for the user's turn."""
+    """Right-aligned surface bubble for the user's turn.
+
+    ``wrap=True`` bounds the bubble to the conversation width, so long
+    Markdown wraps instead of overflowing off-screen while short turns keep
+    their intrinsic width.
+    """
     bubble = ft.Container(
         content=content,
         bgcolor=DS.colors.surface,
@@ -44,6 +49,7 @@ def user_message(content: ft.Control) -> ft.Control:
     )
     return ft.Row(
         controls=[bubble],
+        wrap=True,
         alignment=ft.MainAxisAlignment.END,
         vertical_alignment=ft.CrossAxisAlignment.START,
     )

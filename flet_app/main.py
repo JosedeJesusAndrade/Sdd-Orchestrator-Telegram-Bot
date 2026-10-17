@@ -25,8 +25,11 @@ import flet as ft  # noqa: E402
 
 from config import BASE_DIR, DEFAULT_MODEL  # noqa: E402
 from flet_app.core.design_system import DS  # noqa: E402
-from flet_app.flet_chat_view import FletChatView  # noqa: E402
+from flet_app.core.navigation import ScreenHost  # noqa: E402
+from flet_app.flet_chat_view import FletChatView, render_history  # noqa: E402
 from flet_app.screens.chat_screen import build_chat_screen  # noqa: E402
+from flet_app.screens.conversations_screen import ConversationsScreen  # noqa: E402
+from services.agent_sessions import ConversationSummary, Message  # noqa: E402
 from services.composition import build_prompt_stack  # noqa: E402
 from services.frontend_gate import AllowAllGate  # noqa: E402
 from services.prompt_service import PromptAlreadyRunningError  # noqa: E402
@@ -65,12 +68,46 @@ async def main(page: ft.Page) -> None:
     except Exception:
         logger.exception("No se pudieron leer los settings; usando defaults")
 
-    chat = build_chat_screen(model=model, workdir=workdir)
+    def open_menu() -> None:
+        page.run_task(show_conversations)
+
+    chat = build_chat_screen(
+        model=model,
+        workdir=workdir,
+        on_menu=open_menu,
+    )
     view = FletChatView(
         page,
         chat.conversation,
         on_first_message=chat.reveal_conversation,
     )
+
+    host = ScreenHost(page, chat.control)
+
+    def go_back() -> None:
+        page.run_task(host.show, chat.control)
+
+    def on_open(
+        summary: ConversationSummary,
+        messages: list[Message],
+        active_name: str,
+    ) -> None:
+        logger.info("Conversación abierta: %s (%s)", summary.title, active_name)
+        render_history(chat.conversation, messages)
+        chat.reveal_conversation()
+        page.run_task(host.show, chat.control)
+
+    conversations = ConversationsScreen(
+        page,
+        core.conversations_service,
+        CONVERSATION_ID,
+        on_back=go_back,
+        on_open=on_open,
+    )
+
+    async def show_conversations() -> None:
+        await host.show(conversations.control)
+        await conversations.load()
 
     async def on_send(
         event: ft.Event[ft.TextField] | ft.Event[ft.Container] | None = None,
@@ -104,7 +141,7 @@ async def main(page: ft.Page) -> None:
             page.update()
 
     chat.composer.bind(on_send)
-    page.add(chat.control)
+    page.add(host.control)
 
 
 if __name__ == "__main__":

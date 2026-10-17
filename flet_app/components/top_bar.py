@@ -1,11 +1,12 @@
 """Top bar molecule: menu, active model, new-chat and avatar placeholders.
 
-The controls are visually complete but inert in Slice 1 — session navigation,
-the model picker and the profile menu are wired in later slices.
+The hamburger opens the conversations screen when ``on_menu`` is supplied;
+the model picker and profile menu remain inert until their own slices.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import flet as ft
@@ -42,7 +43,11 @@ def _placeholder_handler(_: ft.Event[ft.Container]) -> None:
     """Inert click target for controls that arrive in later slices."""
 
 
-def build_top_bar(model: str) -> TopBar:
+def build_top_bar(
+    model: str,
+    *,
+    on_menu: Callable[[], None] | None = None,
+) -> TopBar:
     """Build the Gemini-like top bar for the active ``model``."""
     model_text = ft.Text(
         value=model_display_name(model),
@@ -85,13 +90,18 @@ def build_top_bar(model: str) -> TopBar:
         content=ft.Icon(ft.Icons.PERSON, size=18, color=DS.colors.white),
     )
 
+    def handle_menu(_: ft.Event[ft.IconButton]) -> None:
+        if on_menu is not None:
+            on_menu()
+
     row = ft.Row(
         controls=[
             ft.IconButton(
                 icon=ft.Icons.MENU,
                 icon_color=DS.colors.text_primary,
                 icon_size=22,
-                tooltip="Sesiones (próximamente)",
+                tooltip="Conversaciones",
+                on_click=handle_menu,
             ),
             model_selector,
             ft.Container(expand=True),

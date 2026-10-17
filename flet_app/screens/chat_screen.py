@@ -7,6 +7,7 @@ pill composer pinned to the bottom with the workdir muted underneath.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import flet as ft
@@ -44,9 +45,14 @@ class ChatScreen:
         self.greeting.visible = False
 
 
-def build_chat_screen(*, model: str, workdir: str) -> ChatScreen:
+def build_chat_screen(
+    *,
+    model: str,
+    workdir: str,
+    on_menu: Callable[[], None] | None = None,
+) -> ChatScreen:
     """Build the Slice 1 chat screen."""
-    top_bar = build_top_bar(model)
+    top_bar = build_top_bar(model, on_menu=on_menu)
     greeting = build_greeting()
     composer = build_composer(workdir=workdir)
 

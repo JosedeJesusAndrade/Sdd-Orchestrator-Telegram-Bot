@@ -37,7 +37,16 @@ py-modules = ["bot", "config", "get_chat_id"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["tmp/"]
+extend-exclude = [
+    "tmp/",
+    # Markdown is excluded on purpose: `ruff format .` (CLI) would reformat
+    # Python code blocks inside .md files, but the pre-commit `ruff-format`
+    # hook uses `types: [python]` and only touches .py — keeping both in sync.
+    "*.md",
+]
+# Apply extend-exclude even to paths passed explicitly on the CLI, so
+# `ruff format <file>.md` also honors the exclusion above.
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM", "T20"]

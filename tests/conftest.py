@@ -8,15 +8,19 @@ from pathlib import Path
 import pytest
 
 # Redirect logging to a temp file so pytest runs never pollute the
-# production bot.log. Must run BEFORE ``config`` is imported below: config.py
-# attaches the real FileHandler to bot.log at import time.
+# production bot.log. config.py no longer configures logging at import time
+# (imports are side-effect free), but we still set BOT_LOG_FILE BEFORE the
+# import and call setup_logger() explicitly: belt-and-suspenders, and the
+# suite needs the configured handlers for the end-to-end logging tests.
 # Unconditional (not setdefault) so a stray BOT_LOG_FILE exported in the
 # developer's environment can never point a test run at the production log.
 _TEST_LOG_DIR = Path(tempfile.gettempdir()) / "sdd-bot-tests"
 _TEST_LOG_DIR.mkdir(exist_ok=True)
 os.environ["BOT_LOG_FILE"] = str(_TEST_LOG_DIR / "bot-test.log")
 
-from config import DEFAULT_SESSION_NAME  # noqa: E402
+from config import DEFAULT_SESSION_NAME, setup_logger  # noqa: E402
+
+setup_logger()
 
 
 @pytest.fixture

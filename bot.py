@@ -36,10 +36,17 @@ from config import (
     OPENAI_API_KEY,
     OPENCODE_TIMEOUT,
     OPENCODE_WORKDIR,
+    setup_logger,
 )
-from handlers.admin import session_preview_command, test_md_command
-from handlers.ci import pr_command, update_command, wdir_command
-from handlers.commands import (
+
+# FIRST action of the entry point: attach console + file handlers. Importing
+# the library modules above has no logging side effects (config never calls
+# setup_logger() at import), so this must happen before any code that logs.
+setup_logger()
+
+from handlers.admin import session_preview_command, test_md_command  # noqa: E402
+from handlers.ci import pr_command, update_command, wdir_command  # noqa: E402
+from handlers.commands import (  # noqa: E402
     cancel_command,
     config_command,
     health_command,
@@ -50,15 +57,15 @@ from handlers.commands import (
     start_command,
     status_command,
 )
-from handlers.messages import handle_message, handle_voice
-from handlers.sessions import session_command
-from opencode.client import query_opencode_db
-from persistence.sessions import fetch_opencode_sessions
-from services.composition import build_prompt_stack
-from services.container import AppContainer
-from services.message_sender import MessageSender
-from services.telegram_adapter import TelegramAdapter
-from utils.logging import get_module_logger, log_exception
+from handlers.messages import handle_message, handle_voice  # noqa: E402
+from handlers.sessions import session_command  # noqa: E402
+from opencode.client import query_opencode_db  # noqa: E402
+from persistence.sessions import fetch_opencode_sessions  # noqa: E402
+from services.composition import build_prompt_stack  # noqa: E402
+from services.container import AppContainer  # noqa: E402
+from services.message_sender import MessageSender  # noqa: E402
+from services.telegram_adapter import TelegramAdapter  # noqa: E402
+from utils.logging import get_module_logger, log_exception  # noqa: E402
 
 # Literal "bot" (not __name__): this module runs as "__main__", which would
 # produce the unhelpful logger name "opencode_bot.__main__".

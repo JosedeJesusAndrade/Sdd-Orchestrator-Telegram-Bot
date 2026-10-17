@@ -48,11 +48,15 @@ def _import_config_with(raw: str) -> subprocess.CompletedProcess[str]:
 def test_non_numeric_env_value_exits_with_code_1() -> None:
     result = _import_config_with("not-a-number")
     assert result.returncode == 1
+    # Fail-fast must stay visible even though setup_logger() was never called
+    # (import has no logging side effects): the message goes to stderr.
+    assert "ALLOWED_CHAT_IDS inválido" in result.stderr
 
 
 def test_empty_env_value_exits_with_code_1() -> None:
     result = _import_config_with("")
     assert result.returncode == 1
+    assert "ALLOWED_CHAT_IDS inválido" in result.stderr
 
 
 def test_valid_env_value_imports_cleanly() -> None:

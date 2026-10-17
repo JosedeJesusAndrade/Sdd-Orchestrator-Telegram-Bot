@@ -5,6 +5,7 @@ import logging.handlers
 import os
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 from dotenv import load_dotenv
 
@@ -14,13 +15,13 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 # ─── Logging ───
-# This bootstrap block is intentionally defined ABOVE the ALLOWED_CHAT_IDS
-# parse so the logger exists before the fail-fast check below. Without the
-# move, a logger.critical() at import time would be silently dropped (no
-# handlers attached yet → only logging.lastResort → stderr). SAFE: nothing
-# between here and the parse reads LOG_DIR/LOG_FILE/START_TIME, and the
-# deferred `from utils.logging import ...` in setup_logger() is stdlib-only
-# (no circular import).
+# IMPORTANT: importing this module has ZERO logging side effects. The
+# `opencode_bot` logger is created unconfigured on purpose; `setup_logger()`
+# is called explicitly and exactly once by each entry point (bot.py,
+# flet_app/main.py) as its first action. Before that call records fall through
+# to logging.lastResort (stderr) — they are NEVER written to bot.log just
+# because some script imported the library. tests/conftest.py also calls it
+# (with BOT_LOG_FILE redirected to a temp path) as belt-and-suspenders.
 LOG_DIR = Path(__file__).resolve().parent
 # Env override (BOT_LOG_FILE) lets tests/ETC redirect the log elsewhere;
 # the default stays the production bot.log.
@@ -47,9 +48,19 @@ SWALLOWED_LOG_LEVEL = logging.DEBUG
 # fallback path is only for real typos.
 LOG_FORMAT = os.getenv("BOT_LOG_FORMAT", "text").strip().lower()
 
+# The app logger exists at import time (modules call get_module_logger() while
+# being imported) but has NO handlers until an entry point calls setup_logger().
+logger = logging.getLogger("opencode_bot")
+_logger_configured = False
+
 
 def setup_logger() -> logging.Logger:
     """Configure rotating file + console logger with structured key=value format.
+
+    Idempotent: the entry points call it once, tests/conftest.py calls it once,
+    and a second call must not duplicate handlers (and must not re-open the
+    log file). This function is the ONLY place that attaches the production
+    file handler; importing this module never does.
 
     Why two different handlers?
       - Console: minimal prefix (timestamp + level + message). Interactive
@@ -62,7 +73,10 @@ def setup_logger() -> logging.Logger:
     JSON object per line. Templates are only used in text mode. See
     utils/logging.py for details.
     """
-    logger = logging.getLogger("opencode_bot")
+    global _logger_configured
+    if _logger_configured:
+        return logger
+
     logger.setLevel(logging.INFO)
 
     # Import from utils here to avoid circular import (config is loaded
@@ -111,10 +125,12 @@ def setup_logger() -> logging.Logger:
             extra={"event": "log_format_fallback", "bogus_format": LOG_FORMAT},
         )
 
+    _logger_configured = True
     return logger
 
 
-logger = setup_logger()
+# NOTE: no setup_logger() call here — see the "importing has zero logging side
+# effects" note in the Logging section above. Entry points own the call.
 
 # ─── Telegram ───
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -131,25 +147,41 @@ def parse_allowed_chat_ids(raw: str) -> list[int]:
     return [int(cid.strip()) for cid in raw.split(",") if cid.strip()]
 
 
+def _fail_fast_allowed_chat_ids(raw: str) -> NoReturn:
+    """Report an invalid allow-list and exit without assuming logging exists.
+
+    This runs at import time, before any entry point called setup_logger(), so
+    `logger` normally has no handlers. A logger.critical() alone would only
+    reach logging.lastResort; the explicit stderr write guarantees the operator
+    sees a clear message in every context (daemon, script, test subprocess).
+    If an embedder DID configure handlers before importing config, the
+    structured record goes through them (and thus to its configured file).
+    """
+    message = (
+        "ALLOWED_CHAT_IDS inválido: se esperaba una lista CSV de enteros "
+        f"(ej. '123456789,987654321'). Valor recibido: {raw!r}. "
+        "El bot no puede iniciar sin una allow-list válida."
+    )
+    if logger.handlers:
+        logger.critical(
+            message,
+            extra={"event": "config_allowed_chats_parse_error", "raw": raw},
+            exc_info=True,
+        )
+    else:
+        sys.stderr.write(message + "\n")
+        sys.stderr.flush()
+    raise SystemExit(1)
+
+
 try:
     ALLOWED_CHAT_IDS = parse_allowed_chat_ids(ALLOWED_CHAT_IDS_RAW)
     if not ALLOWED_CHAT_IDS:
         # An empty allow-list is a fatal misconfiguration: the bot would start
         # and reject every chat silently. Fail fast alongside the parse error.
         raise ValueError("ALLOWED_CHAT_IDS produced an empty allow-list")
-except ValueError as e:
-    logger.critical(
-        "ALLOWED_CHAT_IDS inválido: se esperaba una lista CSV de enteros "
-        "(ej. '123456789,987654321'). Valor recibido: %r. El bot no puede "
-        "iniciar sin una allow-list válida.",
-        ALLOWED_CHAT_IDS_RAW,
-        extra={
-            "event": "config_allowed_chats_parse_error",
-            "raw": ALLOWED_CHAT_IDS_RAW,
-        },
-        exc_info=True,
-    )
-    raise SystemExit(1) from e
+except ValueError:
+    _fail_fast_allowed_chat_ids(ALLOWED_CHAT_IDS_RAW)
 
 # ─── OpenCode ───
 OPENCODE_WORKDIR = os.getenv("OPENCODE_WORKDIR", str(BASE_DIR))

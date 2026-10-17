@@ -23,7 +23,12 @@ if __package__ in (None, ""):
 
 import flet as ft  # noqa: E402
 
-from config import BASE_DIR, DEFAULT_MODEL  # noqa: E402
+from config import BASE_DIR, DEFAULT_MODEL, setup_logger  # noqa: E402
+
+# Entry point: attach console + file handlers before anything logs. Importing
+# config/library modules has no logging side effects by design.
+setup_logger()
+
 from flet_app.core.design_system import DS  # noqa: E402
 from flet_app.core.navigation import ScreenHost  # noqa: E402
 from flet_app.flet_chat_view import FletChatView, render_history  # noqa: E402

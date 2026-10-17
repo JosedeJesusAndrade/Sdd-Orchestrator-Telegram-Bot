@@ -26,7 +26,7 @@ def test_make_formatter_unknown_falls_back_to_text() -> None:
 def _run_config_probe(
     *, log_format: str | None, log_file: Path
 ) -> subprocess.CompletedProcess[str]:
-    """Import config in a clean subprocess and report handler[0] formatter."""
+    """Configure logging in a clean subprocess and report handler[0] formatter."""
     env = {**os.environ, "ALLOWED_CHAT_IDS": "111", "BOT_LOG_FILE": str(log_file)}
     env.pop("BOT_LOG_FORMAT", None)
     if log_format is not None:
@@ -35,7 +35,10 @@ def _run_config_probe(
         [
             sys.executable,
             "-c",
-            "import config; print(type(config.logger.handlers[0].formatter).__name__)",
+            (
+                "import config; config.setup_logger(); "
+                "print(type(config.logger.handlers[0].formatter).__name__)"
+            ),
         ],
         cwd=PROJECT_ROOT,
         env=env,
@@ -77,7 +80,10 @@ def test_env_json_handler_emits_json_lines(tmp_path: Path) -> None:
         "BOT_LOG_FILE": str(log_file),
         "BOT_LOG_FORMAT": "json",
     }
-    script = "import config; config.logger.info('hola', extra={'event': 'probe_json', 'n': 7})"
+    script = (
+        "import config; config.setup_logger(); "
+        "config.logger.info('hola', extra={'event': 'probe_json', 'n': 7})"
+    )
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=PROJECT_ROOT,

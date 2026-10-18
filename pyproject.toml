@@ -8,6 +8,7 @@ dependencies = [
     "nest-asyncio>=1.6.0",
     "python-dotenv>=1.0.0",
     "openai>=1.0.0",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ packages = [
     "opencode",
     "persistence",
     "services",
+    "services.opencode_server",
     "tmp",
     "utils",
 ]

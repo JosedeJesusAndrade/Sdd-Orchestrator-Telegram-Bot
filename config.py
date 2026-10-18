@@ -207,6 +207,17 @@ def resolve_opencode_cmd() -> str:
 
 OPENCODE_CMD = os.getenv("OPENCODE_CMD") or resolve_opencode_cmd()
 
+# ─── OpenCode server (v1 HTTP API) ───
+# No import-time fail-fast here: library imports must stay side-effect free.
+# OpenCodeServerManager.ensure_running() raises OpenCodeServerConfigError when
+# the password is empty, so both entry points fail before serving.
+OPENCODE_SERVER_HOST = os.getenv("OPENCODE_SERVER_HOST", "127.0.0.1")
+OPENCODE_SERVER_PORT = int(os.getenv("OPENCODE_SERVER_PORT", "4096"))
+OPENCODE_SERVER_PASSWORD = os.getenv("OPENCODE_SERVER_PASSWORD", "")
+OPENCODE_SERVER_BINARY = os.getenv("OPENCODE_SERVER_BINARY") or OPENCODE_CMD
+OPENCODE_PERMISSION_TIMEOUT = int(os.getenv("OPENCODE_PERMISSION_TIMEOUT", "300"))
+OPENCODE_BACKEND = os.getenv("OPENCODE_BACKEND", "server").strip().lower()
+
 # ─── OpenAI ───
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 

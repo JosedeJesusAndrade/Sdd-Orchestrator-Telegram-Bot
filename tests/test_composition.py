@@ -27,6 +27,8 @@ from services.conversations_service import ConversationsService
 from services.opencode_cli_backend import OpenCodeCLIBackend
 from services.opencode_server import OpenCodeServerClient, OpenCodeServerManager
 from services.opencode_server_backend import OpenCodeServerBackend
+from services.permission_router import PermissionRouter
+from services.permissions import NoOpPermissionPort
 from services.prompt_service import PromptService
 from services.session_service import SessionService
 from services.session_store import SessionStore
@@ -169,6 +171,55 @@ def test_invalid_backend_is_rejected(tmp_path: Path) -> None:
             sessions_path=tmp_path / "sessions.json",
             backend="nope",
         )
+
+
+# ── Permission router wiring ──────────────────────────────────────────
+
+
+def test_server_mode_builds_a_permission_router(tmp_path: Path) -> None:
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        permission_timeout=42,
+    )
+
+    router = core.permission_router
+    assert isinstance(router, PermissionRouter)
+    assert core.permission_port is router
+    assert router.pending_count == 0
+    assert router._timeout == 42
+
+    backend = core.provider_factory.create("opencode")
+    assert isinstance(backend, OpenCodeServerBackend)
+    handler = backend._permission_handler
+    assert handler is not None
+    assert getattr(handler, "__self__", None) is router
+
+
+def test_injected_permission_port_is_wired_without_a_router(tmp_path: Path) -> None:
+    port = NoOpPermissionPort()
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        permission_port=port,
+    )
+
+    assert core.permission_port is port
+    assert core.permission_router is None
+
+    backend = core.provider_factory.create("opencode")
+    assert isinstance(backend, OpenCodeServerBackend)
+    handler = backend._permission_handler
+    assert handler is not None
+    assert getattr(handler, "__self__", None) is port
+
+
+def test_cli_selection_has_no_permission_router(tmp_path: Path) -> None:
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        backend="cli",
+    )
+
+    assert core.permission_port is None
+    assert core.permission_router is None
 
 
 # ── start_time ownership ──────────────────────────────────────────────

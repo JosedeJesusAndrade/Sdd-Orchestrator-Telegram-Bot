@@ -40,7 +40,9 @@ from services.opencode_server import (
     OpenCodeServerManager,
     ServerConfig,
 )
-from services.opencode_server_backend import OpenCodeServerBackend, PermissionHandler
+from services.opencode_server_backend import OpenCodeServerBackend
+from services.permission_router import PermissionRouter
+from services.permissions import PermissionPort
 from services.prompt_service import PromptService
 from services.session_service import SessionService
 from services.session_store import SessionStore
@@ -68,9 +70,13 @@ class CoreStack:
     start_time: float
     backend: str = OPENCODE_BACKEND
     permission_timeout: int = OPENCODE_PERMISSION_TIMEOUT
-    # Server-mode only; both stay ``None`` with ``OPENCODE_BACKEND=cli``.
+    # Server-mode only; all stay ``None`` with ``OPENCODE_BACKEND=cli``.
     server_manager: OpenCodeServerManager | None = None
     server_client: OpenCodeServerClient | None = None
+    permission_port: PermissionPort | None = None
+    #: The concrete router when the active port is a ``PermissionRouter``
+    #: (Phase 4/5 register their presenters on it).
+    permission_router: PermissionRouter | None = None
 
 
 def build_prompt_stack(
@@ -88,7 +94,7 @@ def build_prompt_stack(
     server_password: str = OPENCODE_SERVER_PASSWORD,
     server_binary: str = OPENCODE_SERVER_BINARY,
     permission_timeout: int = OPENCODE_PERMISSION_TIMEOUT,
-    permission_handler: PermissionHandler | None = None,
+    permission_port: PermissionPort | None = None,
     server_client: OpenCodeServerClient | None = None,
     server_manager: OpenCodeServerManager | None = None,
 ) -> CoreStack:
@@ -107,6 +113,10 @@ def build_prompt_stack(
     Server construction is LAZY: creating the manager/client opens no socket
     and spawns no process. ``OpenCodeServerBackend`` calls
     ``manager.ensure_running()`` on its first ``execute``.
+
+    ``permission_port`` defaults to a ``PermissionRouter`` with no presenters
+    (Phase 3: fail closed). Phase 4/5 register their UI adapters on
+    ``CoreStack.permission_router``.
     """
     selected_backend = backend.strip().lower()
     if selected_backend not in {"server", "cli"}:
@@ -120,6 +130,8 @@ def build_prompt_stack(
     provider_factory = AIProviderFactory(default_provider=default_provider)
     manager: OpenCodeServerManager | None = None
     client: OpenCodeServerClient | None = None
+    resolved_port: PermissionPort | None = None
+    router: PermissionRouter | None = None
 
     if selected_backend == "server":
         manager = server_manager or OpenCodeServerManager(
@@ -136,11 +148,20 @@ def build_prompt_stack(
             server_password,
             workdir,
         )
+        resolved_port = (
+            permission_port
+            if permission_port is not None
+            else PermissionRouter(presenters=[], timeout=permission_timeout)
+        )
+        if isinstance(resolved_port, PermissionRouter):
+            router = resolved_port
         provider_factory.register(
             "opencode",
             OpenCodeServerBackend,
             client=client,
-            permission_handler=permission_handler,
+            # The backend only needs the callable; pass the port's bound
+            # method so any PermissionPort implementation can be injected.
+            permission_handler=resolved_port.request_permission,
             timeout=timeout,
             manager=manager,
         )
@@ -181,4 +202,6 @@ def build_prompt_stack(
         permission_timeout=permission_timeout,
         server_manager=manager,
         server_client=client,
+        permission_port=resolved_port,
+        permission_router=router,
     )

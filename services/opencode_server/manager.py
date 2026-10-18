@@ -187,22 +187,29 @@ class OpenCodeServerManager:
         forced = False
 
         if process.returncode is None:
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                log_exception(
-                    "opencode_server_terminate_missing",
-                    module=__name__,
-                    pid=pid,
-                )
-
-            try:
-                await asyncio.wait_for(process.wait(), timeout=STOP_TIMEOUT)
-            except TimeoutError:
+            if IS_WINDOWS:
+                # npm installs ``opencode`` as a .cmd shim, so the real server
+                # runs as a CHILD of cmd.exe. ``terminate()`` kills only the
+                # wrapper and orphans the server (verified live: the child
+                # kept the port bound). Kill the whole tree up front instead.
                 forced = True
-                if IS_WINDOWS:
-                    await self._taskkill(pid)
-                else:
+                await self._taskkill(pid)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(process.wait(), timeout=STOP_TIMEOUT)
+            else:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    log_exception(
+                        "opencode_server_terminate_missing",
+                        module=__name__,
+                        pid=pid,
+                    )
+
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=STOP_TIMEOUT)
+                except TimeoutError:
+                    forced = True
                     with contextlib.suppress(ProcessLookupError):
                         process.kill()
                     await process.wait()

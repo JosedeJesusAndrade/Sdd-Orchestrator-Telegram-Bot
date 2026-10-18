@@ -230,6 +230,7 @@ async def test_stop_is_noop_when_not_owned(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 async def test_stop_terminates_owned_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(manager_module, "IS_WINDOWS", False)
     manager = _manager(password="secret")
     process = _FakeProcess()
     manager._process = process  # type: ignore[assignment]
@@ -246,18 +247,40 @@ async def test_stop_terminates_owned_process(monkeypatch: pytest.MonkeyPatch) ->
     assert manager.is_owned is False
 
 
-async def test_stop_forces_taskkill_on_windows_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stop_kills_the_tree_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: terminate() on the .cmd shim orphans the real server.
+
+    The live probe showed the child keeping the port bound after the wrapper
+    was terminated, so shutdown must taskkill the tree up front.
+    """
     monkeypatch.setattr(manager_module, "IS_WINDOWS", True)
     manager = _manager(password="secret")
-    process = _FakeProcess(pid=777, wait_timeout=True)
+    process = _FakeProcess(pid=777)
     manager._process = process  # type: ignore[assignment]
     manager._owned = True
     calls = _install_spawn(monkeypatch, _KillProcess())
 
     await manager.stop()
 
-    assert process.terminated is True
+    assert process.terminated is False
     assert calls == [("taskkill", "/F", "/T", "/PID", "777")]
+    assert manager.is_owned is False
+
+
+async def test_stop_survives_wait_timeout_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "IS_WINDOWS", True)
+    manager = _manager(password="secret")
+    process = _FakeProcess(pid=778, wait_timeout=True)
+    manager._process = process  # type: ignore[assignment]
+    manager._owned = True
+    calls = _install_spawn(monkeypatch, _KillProcess())
+
+    await manager.stop()
+
+    assert calls == [("taskkill", "/F", "/T", "/PID", "778")]
+    assert manager._process is None
     assert manager.is_owned is False
 
 

@@ -32,6 +32,7 @@ setup_logger()
 from flet_app.core.design_system import DS  # noqa: E402
 from flet_app.core.navigation import ScreenHost  # noqa: E402
 from flet_app.flet_chat_view import FletChatView, render_history  # noqa: E402
+from flet_app.flet_permission_presenter import FletPermissionPresenter  # noqa: E402
 from flet_app.screens.chat_screen import build_chat_screen  # noqa: E402
 from flet_app.screens.conversations_screen import ConversationsScreen  # noqa: E402
 from services.agent_sessions import ConversationSummary, Message  # noqa: E402
@@ -86,6 +87,28 @@ async def main(page: ft.Page) -> None:
         chat.conversation,
         on_first_message=chat.reveal_conversation,
     )
+
+    # Permission prompts share the router with Telegram. The Flet presenter
+    # renders them as queued modal dialogs and writes the outcome notices into
+    # the SAME column the chat view renders into. With ``OPENCODE_BACKEND=cli``
+    # there is no router, so nothing is registered and the UI is unchanged.
+    if core.permission_router is not None:
+        core.permission_router.add_presenter(
+            FletPermissionPresenter(
+                page,
+                chat.conversation,
+                resolve=core.permission_router.resolve_from_ui,
+            )
+        )
+        logger.info(
+            "Flet permission presenter registered",
+            extra={"event": "permission_presenter_registered", "frontend": "flet"},
+        )
+    else:
+        logger.info(
+            "Flet permission presenter skipped",
+            extra={"event": "permission_presenter_skipped", "frontend": "flet"},
+        )
 
     host = ScreenHost(page, chat.control)
 

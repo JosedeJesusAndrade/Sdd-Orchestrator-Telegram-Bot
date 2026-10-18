@@ -117,6 +117,22 @@ async def test_unknown_request_id_is_rejected_by_resolve() -> None:
     assert await router.resolve_from_ui("per_unknown", PermissionDecision(reply="once")) is False
 
 
+async def test_ui_resolution_notifies_presenters() -> None:
+    """The router (not the callback handler) tells UIs how the request ended."""
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+    decision = PermissionDecision(reply="always")
+    assert await router.resolve_from_ui(request.id, decision) is True
+
+    assert presenter.resolved == [(request.id, decision)]
+    assert await task == decision
+
+
 # ── Timeout ───────────────────────────────────────────────────────────────
 
 

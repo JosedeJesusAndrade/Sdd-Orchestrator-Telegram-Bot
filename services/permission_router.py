@@ -118,12 +118,19 @@ class PermissionRouter:
                 show_task.add_done_callback(_consume_task_result)
 
     async def resolve_from_ui(self, request_id: str, decision: PermissionDecision) -> bool:
-        """Resolve a pending request. Returns ``False`` if unknown/already resolved."""
+        """Resolve a pending request. Returns ``False`` if unknown/already resolved.
+
+        After the future is settled, every presenter is notified so each UI can
+        render the outcome (edit the Telegram message, pop the Flet dialog)
+        without the callback handler knowing which frontend owns the request.
+        This is the normal-resolution counterpart of the timeout notice below.
+        """
         future = self._pending.get(request_id)
         if future is None or future.done():
             return False
         future.set_result(decision)
         self._pending.pop(request_id, None)
+        await self._resolve_all(request_id, decision)
         return True
 
     async def _show_all(self, request: PermissionRequest) -> None:

@@ -7,8 +7,10 @@ bot and the Flet GUI can coexist against the same server.
 
 Windows specifics: npm installs ``opencode`` as a ``.cmd`` shim, which
 ``CreateProcess`` cannot execute directly — the command is wrapped in
-``cmd /c``. Shutdown uses ``terminate()`` first and escalates to
-``taskkill /F /T`` (the whole tree) when the process ignores it.
+``cmd /c``. Because the real server is then a child of ``cmd.exe``, shutdown
+uses ``taskkill /F /T`` on the whole tree up front (``terminate()`` would
+orphan the child). On POSIX it terminates first and escalates to ``kill()``
+after 5s.
 """
 
 from __future__ import annotations
@@ -175,9 +177,10 @@ class OpenCodeServerManager:
     async def stop(self) -> None:
         """Stop the server only if this manager owns it.
 
-        ``terminate()`` -> wait up to 5s -> ``taskkill /F /T`` (Windows) or
-        ``kill()`` elsewhere. An adopted server (``is_owned is False``) is
-        never touched.
+        Windows: ``taskkill /F /T`` kills the ``cmd.exe`` tree so the real
+        server cannot be orphaned. POSIX: ``terminate()``, wait up to 5s,
+        then ``kill()``. An adopted server (``is_owned is False``) is never
+        touched.
         """
         process = self._process
         if not self._owned or process is None:

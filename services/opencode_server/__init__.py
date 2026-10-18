@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from services.opencode_server.client import OpenCodeServerClient
 from services.opencode_server.errors import (
     OpenCodeAuthError,
     OpenCodeRequestError,
@@ -14,6 +15,7 @@ from services.opencode_server.manager import OpenCodeServerManager, ServerConfig
 __all__ = [
     "OpenCodeAuthError",
     "OpenCodeRequestError",
+    "OpenCodeServerClient",
     "OpenCodeServerConfigError",
     "OpenCodeServerError",
     "OpenCodeServerManager",

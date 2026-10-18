@@ -1,0 +1,207 @@
+"""Tests for ``PermissionRouter`` — no live server, no real UI.
+
+Covers the rendezvous contract: broadcast to every presenter, first-wins,
+timeout -> auto-reject + notice, fail-closed without presenters, presenter
+isolation, concurrent independent requests, and future cleanup.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import pytest
+
+from services.permission_router import (
+    NO_PRESENTER_MESSAGE,
+    TIMEOUT_MESSAGE,
+    PermissionRouter,
+)
+from services.permissions import PermissionDecision, PermissionRequest
+
+SID = "ses_router_test"
+
+
+def _request(request_id: str = "per_1", *, session_id: str = SID) -> PermissionRequest:
+    return PermissionRequest(
+        id=request_id,
+        session_id=session_id,
+        permission="bash",
+        patterns=("git commit *",),
+        metadata={"command": "git commit -m x"},
+        always=("git commit *",),
+        message_id="msg_1",
+        call_id="call_1",
+    )
+
+
+class RecordingPresenter:
+    """Minimal presenter double; the optional queue makes concurrency deterministic."""
+
+    def __init__(self, queue: asyncio.Queue[PermissionRequest] | None = None) -> None:
+        self.shown: list[PermissionRequest] = []
+        self.resolved: list[tuple[str, PermissionDecision]] = []
+        self.shown_event = asyncio.Event()
+        self._queue = queue
+
+    async def show(self, request: PermissionRequest) -> None:
+        self.shown.append(request)
+        self.shown_event.set()
+        if self._queue is not None:
+            self._queue.put_nowait(request)
+
+    async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
+        self.resolved.append((request_id, decision))
+
+
+class RaisingPresenter:
+    async def show(self, request: PermissionRequest) -> None:
+        raise RuntimeError("presenter roto")
+
+    async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
+        raise RuntimeError("presenter roto")
+
+
+# ── Happy path ────────────────────────────────────────────────────────────
+
+
+async def test_presenter_receives_the_request() -> None:
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+    assert presenter.shown == [request]
+    assert router.pending_count == 1
+
+    assert await router.resolve_from_ui(request.id, PermissionDecision(reply="once")) is True
+
+    assert await task == PermissionDecision(reply="once")
+    assert router.pending_count == 0
+
+
+async def test_resolve_from_ui_returns_the_decision() -> None:
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+    expected = PermissionDecision(reply="always", message="ok")
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+    assert await router.resolve_from_ui(request.id, expected) is True
+    assert await task == expected
+
+
+async def test_first_resolve_wins_and_duplicates_are_ignored() -> None:
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+    first = PermissionDecision(reply="once")
+    assert await router.resolve_from_ui(request.id, first) is True
+    assert await router.resolve_from_ui(request.id, PermissionDecision(reply="reject")) is False
+
+    assert await task == first
+    assert router.pending_count == 0
+
+
+async def test_unknown_request_id_is_rejected_by_resolve() -> None:
+    router = PermissionRouter(presenters=[RecordingPresenter()], timeout=1.0)
+
+    assert await router.resolve_from_ui("per_unknown", PermissionDecision(reply="once")) is False
+
+
+# ── Timeout ───────────────────────────────────────────────────────────────
+
+
+async def test_timeout_rejects_and_notifies_presenters(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0.01)
+
+    with caplog.at_level(logging.WARNING):
+        decision = await asyncio.wait_for(router.request_permission(request), timeout=1.0)
+
+    assert decision == PermissionDecision(
+        reply="reject",
+        message=TIMEOUT_MESSAGE,
+        timed_out=True,
+    )
+    assert presenter.resolved == [(request.id, decision)]
+    assert router.pending_count == 0
+    assert any(getattr(record, "event", "") == "permission_timeout" for record in caplog.records)
+
+
+# ── Fail closed / isolation ───────────────────────────────────────────────
+
+
+async def test_no_presenters_fails_closed_immediately(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    router = PermissionRouter(presenters=[], timeout=10.0)
+
+    with caplog.at_level(logging.WARNING):
+        decision = await asyncio.wait_for(router.request_permission(_request()), timeout=1.0)
+
+    assert decision.reply == "reject"
+    assert decision.message == NO_PRESENTER_MESSAGE
+    assert decision.timed_out is False
+    assert router.pending_count == 0
+    assert any(
+        getattr(record, "event", "") == "permission_no_presenter" for record in caplog.records
+    )
+
+
+async def test_a_broken_presenter_does_not_block_the_others(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request()
+    healthy = RecordingPresenter()
+    router = PermissionRouter(presenters=[RaisingPresenter(), healthy], timeout=1.0)
+
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(router.request_permission(request))
+        await asyncio.wait_for(healthy.shown_event.wait(), timeout=1.0)
+
+        assert await router.resolve_from_ui(request.id, PermissionDecision(reply="once")) is True
+        assert await task == PermissionDecision(reply="once")
+
+    assert any(
+        getattr(record, "event", "") == "permission_presenter_show_failed"
+        for record in caplog.records
+    )
+
+
+# ── Concurrency ───────────────────────────────────────────────────────────
+
+
+async def test_concurrent_requests_are_independent() -> None:
+    first = _request("per_1")
+    second = _request("per_2")
+    shown: asyncio.Queue[PermissionRequest] = asyncio.Queue()
+    presenter = RecordingPresenter(queue=shown)
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    task_one = asyncio.create_task(router.request_permission(first))
+    task_two = asyncio.create_task(router.request_permission(second))
+    await asyncio.wait_for(shown.get(), timeout=1.0)
+    await asyncio.wait_for(shown.get(), timeout=1.0)
+
+    assert router.pending_count == 2
+
+    assert await router.resolve_from_ui(first.id, PermissionDecision(reply="once")) is True
+    assert await task_one == PermissionDecision(reply="once")
+    assert router.pending_count == 1
+    assert not task_two.done()
+
+    assert await router.resolve_from_ui(second.id, PermissionDecision(reply="always")) is True
+    assert await task_two == PermissionDecision(reply="always")
+    assert router.pending_count == 0

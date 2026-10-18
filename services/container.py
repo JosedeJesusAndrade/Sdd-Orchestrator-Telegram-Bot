@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from services.bot_port import BotPort
     from services.health_service import HealthService
     from services.message_sender import MessageSender
+    from services.permission_router import PermissionRouter
     from services.prompt_service import PromptService
     from services.session_service import SessionService
     from services.session_store import SessionStore
@@ -37,3 +38,6 @@ class AppContainer:
     start_time: float
     allowed_chat_ids: list[int]
     default_model: str
+    #: ``None`` with ``OPENCODE_BACKEND=cli`` — the permission callback then
+    #: answers "Ya fue resuelto" instead of resolving anything.
+    permission_router: PermissionRouter | None = None

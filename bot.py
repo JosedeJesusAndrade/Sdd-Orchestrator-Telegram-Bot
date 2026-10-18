@@ -20,6 +20,7 @@ import nest_asyncio
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -58,6 +59,7 @@ from handlers.commands import (  # noqa: E402
     status_command,
 )
 from handlers.messages import handle_message, handle_voice  # noqa: E402
+from handlers.permissions import permission_callback  # noqa: E402
 from handlers.sessions import session_command  # noqa: E402
 from opencode.client import query_opencode_db  # noqa: E402
 from persistence.sessions import fetch_opencode_sessions  # noqa: E402
@@ -65,6 +67,7 @@ from services.composition import build_prompt_stack  # noqa: E402
 from services.container import AppContainer  # noqa: E402
 from services.message_sender import MessageSender  # noqa: E402
 from services.telegram_adapter import TelegramAdapter  # noqa: E402
+from services.telegram_permission_presenter import TelegramPermissionPresenter  # noqa: E402
 from utils.logging import get_module_logger, log_exception  # noqa: E402
 
 # Literal "bot" (not __name__): this module runs as "__main__", which would
@@ -278,6 +281,9 @@ def build_application() -> Application[Any, Any, Any, Any, Any, Any]:
     application.add_handler(CommandHandler("pr", pr_command))
     application.add_handler(CommandHandler("update", update_command))
     application.add_handler(CommandHandler("wdir", wdir_command))
+    # Permission buttons (built by TelegramPermissionPresenter). The pattern
+    # matches only our callback_data, so no other callback is intercepted.
+    application.add_handler(CallbackQueryHandler(permission_callback, pattern=r"^perm:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
@@ -310,6 +316,27 @@ async def run_bot() -> None:
     # CoreStack so both frontends share uptime semantics.
     core = build_prompt_stack()
 
+    # ── Permission UI wiring (Phase 4) ──
+    # The router only exists in server mode. With OPENCODE_BACKEND=cli it is
+    # None, so no presenter is registered and a stale button click answers
+    # "Ya fue resuelto" (nothing can be pending).
+    if core.permission_router is not None:
+        core.permission_router.add_presenter(TelegramPermissionPresenter(app.bot, ALLOWED_CHAT_IDS))
+        logger.info(
+            "Telegram permission presenter registered",
+            extra={
+                "event": "permission_presenter_registered",
+                "backend": core.backend,
+                "chats": len(ALLOWED_CHAT_IDS),
+            },
+        )
+    else:
+        logger.info(
+            "Permission presenter skipped (backend=%s)",
+            core.backend,
+            extra={"event": "permission_presenter_skipped", "backend": core.backend},
+        )
+
     # ── Telegram-specific adapters + DI payload ──
     # Only the PTB transport pieces stay here; the provider registration and
     # the SessionStore/PromptService wiring moved into build_prompt_stack().
@@ -329,6 +356,7 @@ async def run_bot() -> None:
         start_time=core.start_time,
         allowed_chat_ids=ALLOWED_CHAT_IDS,
         default_model=DEFAULT_MODEL,
+        permission_router=core.permission_router,
     )
     app.bot_data[CONTAINER_KEY] = container
     logger.info(

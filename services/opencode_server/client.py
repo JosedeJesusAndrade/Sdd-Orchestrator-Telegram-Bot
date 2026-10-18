@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -160,12 +160,21 @@ class OpenCodeServerClient:
             raise
         return True
 
-    async def stream_events(self) -> AsyncIterator[dict[str, Any]]:
+    async def stream_events(
+        self,
+        *,
+        on_connect: Callable[[], None] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         """Yield filtered SSE events as ``{"id", "type", "properties"}``.
 
         SSE framing is respected: consecutive ``data:`` lines belong to one
         event and are joined with newlines; an empty line dispatches it.
         Comment lines (``: heartbeat``) and blank lines are ignored.
+
+        ``on_connect`` fires once the HTTP response headers have arrived (the
+        connection is established) but before any event is consumed. The
+        backend uses it to guarantee the stream is open *before* sending a
+        prompt, closing the verified ``permission.asked`` race.
         """
         async with self._client.stream(
             "GET",
@@ -176,6 +185,9 @@ class OpenCodeServerClient:
             if response.status_code >= 400:
                 await response.aread()
                 self._raise_response_error(response)
+
+            if on_connect is not None:
+                on_connect()
 
             data_lines: list[str] = []
             async for line in response.aiter_lines():

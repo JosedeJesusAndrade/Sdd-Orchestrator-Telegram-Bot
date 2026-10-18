@@ -200,6 +200,8 @@ class _RecordingStore:
 
 
 class _RecordingBackend:
+    supports_live_progress = False
+
     def __init__(self, results: list[AIBackendResult]) -> None:
         self._results = results
         self.session_ids: list[str | None] = []
@@ -213,6 +215,7 @@ class _RecordingBackend:
         workdir: str | None = None,
         source_label: str = "",
         timeout: int | None = None,
+        on_progress: Any = None,
     ) -> AIBackendResult:
         self.session_ids.append(session_id)
         return self._results.pop(0)

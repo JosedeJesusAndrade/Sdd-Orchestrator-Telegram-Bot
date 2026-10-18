@@ -379,3 +379,26 @@ async def test_stream_events_parses_and_filters_sse(
     }
     assert events[1]["type"] == "permission.asked"
     assert events[3]["properties"] == {"part": {}}
+
+
+async def test_stream_events_signals_connection_before_events(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        _assert_auth_and_directory(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=SSE_BODY,
+        )
+
+    client = make_client(handler)
+    order: list[str] = []
+
+    stream = client.stream_events(on_connect=lambda: order.append("connected"))
+    async for event in stream:
+        order.append(f"event:{event['id']}")
+
+    # The backend relies on this to open the stream BEFORE sending a prompt.
+    assert order[0] == "connected"
+    assert order[1:] == ["event:evt_3", "event:evt_4", "event:evt_8", "event:evt_9"]

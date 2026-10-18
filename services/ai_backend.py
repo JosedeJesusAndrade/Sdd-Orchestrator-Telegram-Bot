@@ -10,6 +10,7 @@ IS an AIBackend. No inheritance needed. Supports:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -30,6 +31,10 @@ class AIBackendResult:
 class AIBackend(Protocol):
     """Protocol for AI execution backends."""
 
+    #: True when ``execute`` can push incremental text via ``on_progress``.
+    #: PromptService keeps its elapsed-time ticker only when this is False.
+    supports_live_progress: bool
+
     async def execute(
         self,
         prompt: str,
@@ -39,12 +44,15 @@ class AIBackend(Protocol):
         workdir: str | None = None,
         source_label: str = "",
         timeout: int | None = None,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> AIBackendResult:
         """Execute a prompt and return the result.
 
         Args:
             timeout: Per-call timeout in seconds. ``None`` means "use the
                 backend's configured default" (e.g. the constructor timeout).
+            on_progress: Optional async callback for incremental output.
+                Backends that do not stream (the CLI) accept and ignore it.
         """
         ...
 

@@ -27,3 +27,16 @@ class PermissionRequest:
     always: tuple[str, ...]
     message_id: str | None
     call_id: str | None
+
+
+@dataclass(frozen=True)
+class PermissionDecision:
+    """The answer to a :class:`PermissionRequest`.
+
+    ``timed_out`` lets Phase 3 presenters show "rechazado automáticamente"
+    without inspecting the message text.
+    """
+
+    reply: Reply
+    message: str | None = None
+    timed_out: bool = False

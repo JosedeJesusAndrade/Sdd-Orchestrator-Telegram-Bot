@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from services.ai_backend import AIBackendResult
@@ -108,6 +109,9 @@ def _parse_json_output(raw_stdout: str) -> tuple[str, str | None]:
 class OpenCodeCLIBackend:
     """Executes OpenCode prompts via CLI subprocess."""
 
+    #: One-shot subprocess output cannot be streamed incrementally.
+    supports_live_progress = False
+
     def __init__(self, opencode_cmd: str, workdir: str, timeout: int = 300):
         self._cmd = opencode_cmd
         self._workdir = workdir
@@ -123,6 +127,7 @@ class OpenCodeCLIBackend:
         workdir: str | None = None,
         source_label: str = "",
         timeout: int | None = None,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> AIBackendResult:
         """Execute a prompt via the OpenCode CLI subprocess.
 

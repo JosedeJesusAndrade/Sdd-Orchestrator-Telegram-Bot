@@ -51,6 +51,20 @@ def test_import_opencode_client_does_not_touch_bot_log() -> None:
     assert _snapshot() == before
 
 
+def test_import_opencode_server_package_does_not_touch_bot_log() -> None:
+    before = _snapshot()
+    result = _run("import services.opencode_server")
+    assert result.returncode == 0, result.stderr
+    assert _snapshot() == before
+
+
+def test_import_server_lifecycle_does_not_touch_bot_log() -> None:
+    before = _snapshot()
+    result = _run("import services.server_lifecycle")
+    assert result.returncode == 0, result.stderr
+    assert _snapshot() == before
+
+
 def test_import_does_not_configure_handlers() -> None:
     result = _run("import config; print(len(config.logger.handlers))")
     assert result.returncode == 0, result.stderr

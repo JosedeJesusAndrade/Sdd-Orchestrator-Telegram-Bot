@@ -66,6 +66,11 @@ from persistence.sessions import fetch_opencode_sessions  # noqa: E402
 from services.composition import build_prompt_stack  # noqa: E402
 from services.container import AppContainer  # noqa: E402
 from services.message_sender import MessageSender  # noqa: E402
+from services.opencode_server.errors import OpenCodeServerConfigError  # noqa: E402
+from services.server_lifecycle import (  # noqa: E402
+    start_server_lifecycle,
+    stop_server_lifecycle,
+)
 from services.telegram_adapter import TelegramAdapter  # noqa: E402
 from services.telegram_permission_presenter import TelegramPermissionPresenter  # noqa: E402
 from utils.logging import get_module_logger, log_exception  # noqa: E402
@@ -73,6 +78,14 @@ from utils.logging import get_module_logger, log_exception  # noqa: E402
 # Literal "bot" (not __name__): this module runs as "__main__", which would
 # produce the unhelpful logger name "opencode_bot.__main__".
 logger = get_module_logger("bot")
+
+# Fail-fast message for a misconfigured server backend. Printed with
+# logger.critical() (which always reaches the console handler) before exit.
+SERVER_CONFIG_ERROR_MESSAGE = (
+    "No se puede iniciar el bot en modo servidor: falta OPENCODE_SERVER_PASSWORD. "
+    "El servidor OpenCode exige Basic auth; define la variable en .env "
+    "(recomendado: openssl rand -hex 16) o usa OPENCODE_BACKEND=cli."
+)
 
 
 # ── Connection state tracking ──────────────────────────────────────────
@@ -307,8 +320,6 @@ async def run_bot() -> None:
 
     await app.initialize()
     await app.start()
-    assert app.updater is not None
-    await app.updater.start_polling()
 
     # ── Build the shared, frontend-agnostic core graph ──
     # Composition root extracted to services/composition.py (Fase A): a second
@@ -362,6 +373,35 @@ async def run_bot() -> None:
     logger.info(
         "Service layer initialized (SessionStore + MessageSender + PromptService + AppContainer)"
     )
+
+    # ── Server lifecycle (Phase 6) ──────────────────────────────────
+    # Server mode: probe/adopt or spawn `opencode serve` and wait until it is
+    # healthy BEFORE polling. A missing password raises
+    # OpenCodeServerConfigError here, so the bot fails fast instead of
+    # accepting updates whose every prompt would fail. The supervisor task
+    # keeps the server alive for the whole bot lifetime.
+    #
+    # CLI mode (core.server_manager is None) skips straight to polling.
+    assert app.updater is not None
+    updater = app.updater
+
+    async def start_polling() -> None:
+        await updater.start_polling()
+
+    try:
+        server_supervisor = await start_server_lifecycle(
+            core.server_manager,
+            start_polling=start_polling,
+        )
+    except OpenCodeServerConfigError:
+        logger.critical(
+            SERVER_CONFIG_ERROR_MESSAGE,
+            extra={"event": "opencode_server_config_error"},
+            exc_info=True,
+        )
+        await app.stop()
+        await app.shutdown()
+        sys.exit(1)
 
     # ── Shared shutdown event + exit code ───────────────────────────
     # exit_code is a list for mutability (handlers need to set it)
@@ -453,6 +493,9 @@ async def run_bot() -> None:
         await connectivity_task
     assert app.updater is not None
     await app.updater.stop()
+    # Cancel the supervisor and stop only the server this bot spawned; an
+    # adopted instance is left running on purpose.
+    await stop_server_lifecycle(core.server_manager, server_supervisor)
     await app.stop()
     await app.shutdown()
     logger.info(

@@ -402,3 +402,81 @@ async def test_stream_events_signals_connection_before_events(
     # The backend relies on this to open the stream BEFORE sending a prompt.
     assert order[0] == "connected"
     assert order[1:] == ["event:evt_3", "event:evt_4", "event:evt_8", "event:evt_9"]
+
+
+# -- Per-call directory override -------------------------------------------
+
+OTHER_DIRECTORY = Path(r"C:\conversation\project").as_posix()
+
+
+async def test_create_session_directory_override(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("directory", ""))
+        return httpx.Response(200, json={"id": "ses_1"})
+
+    client = make_client(handler)
+
+    await client.create_session("x", directory=r"C:\conversation\project")
+
+    assert seen == [OTHER_DIRECTORY]
+
+
+async def test_send_prompt_directory_override(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("directory", ""))
+        return httpx.Response(204)
+
+    client = make_client(handler)
+
+    await client.send_prompt(
+        "ses_1",
+        "x",
+        model="deepseek/flash",
+        directory=r"C:\conversation\project",
+    )
+
+    assert seen == [OTHER_DIRECTORY]
+
+
+async def test_get_messages_directory_override(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("directory", ""))
+        return httpx.Response(200, json=[])
+
+    client = make_client(handler)
+
+    assert await client.get_messages("ses_1", directory=r"C:\conversation\project") == []
+    assert seen == [OTHER_DIRECTORY]
+
+
+async def test_stream_events_directory_override(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("directory", ""))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text='data: {"id":"evt_1","type":"session.idle","properties":{}}\n\n',
+        )
+
+    client = make_client(handler)
+
+    events = [event async for event in client.stream_events(directory=r"C:\conversation\project")]
+
+    assert [event["id"] for event in events] == ["evt_1"]
+    assert seen == [OTHER_DIRECTORY]

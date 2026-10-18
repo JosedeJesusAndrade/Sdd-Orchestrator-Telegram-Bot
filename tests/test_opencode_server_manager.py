@@ -86,7 +86,7 @@ async def test_ensure_running_starts_when_unhealthy(monkeypatch: pytest.MonkeyPa
 
     started: list[bool] = []
 
-    async def start() -> None:
+    async def start(*, directory: object = None) -> None:
         started.append(True)
 
     async def no_sleep(_delay: float) -> None:
@@ -124,7 +124,7 @@ async def test_ensure_running_times_out_and_stops(monkeypatch: pytest.MonkeyPatc
 
     stopped: list[bool] = []
 
-    async def start() -> None:
+    async def start(*, directory: object = None) -> None:
         return None
 
     async def stop() -> None:
@@ -361,3 +361,46 @@ async def test_supervisor_resets_counter_after_a_success(
         await manager.run_forever()
 
     assert restarts == []
+
+
+# -- Conversation directory ------------------------------------------------
+
+
+async def test_start_uses_the_given_directory_as_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "IS_WINDOWS", False)
+    manager = _manager(password="secret", binary="opencode", directory=Path("C:/default"))
+    captured: dict[str, object] = {}
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProcess:
+        captured.update(kwargs)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    await manager.start(directory=Path("C:/conv/project"))
+    await asyncio.sleep(0)
+
+    assert captured["cwd"] == str(Path("C:/conv/project"))
+
+
+async def test_ensure_running_forwards_directory_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(password="secret")
+    probes = iter([False, True])
+    started: list[object] = []
+
+    async def health() -> bool:
+        return next(probes)
+
+    async def start(*, directory: object = None) -> None:
+        started.append(directory)
+
+    monkeypatch.setattr(manager, "health", health)
+    monkeypatch.setattr(manager, "start", start)
+
+    await manager.ensure_running(directory=Path("C:/conv/project"))
+
+    assert started == [Path("C:/conv/project")]

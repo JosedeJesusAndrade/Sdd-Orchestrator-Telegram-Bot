@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from services.opencode_server.errors import OpenCodeUnavailableError
+from services.opencode_server.errors import OpenCodeStreamError, OpenCodeUnavailableError
 from services.opencode_server_backend import (
     PHASE3_REJECT_MESSAGE,
     OpenCodeServerBackend,
@@ -99,17 +99,34 @@ class FakeClient:
         self.permission_list_calls = 0
         self.aborted: list[str] = []
         self.stream_count = 0
+        self.directory = "C:/fake"
+        self.directories: dict[str, list[str | None]] = {
+            "create": [],
+            "stream": [],
+            "prompt": [],
+            "messages": [],
+            "permissions": [],
+            "reply": [],
+            "abort": [],
+        }
         self._release = asyncio.Event()
 
     def release(self) -> None:
         self._release.set()
 
-    async def create_session(self, title: str) -> str:
+    async def create_session(self, title: str, *, directory: str | None = None) -> str:
         self.order.append("create")
         self.created_titles.append(title)
+        self.directories["create"].append(directory)
         return self.session_id
 
-    def stream_events(self, *, on_connect: Any = None) -> AsyncIterator[dict[str, Any]]:
+    def stream_events(
+        self,
+        *,
+        on_connect: Any = None,
+        directory: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.directories["stream"].append(directory)
         return self._stream(on_connect)
 
     async def _stream(self, on_connect: Any) -> AsyncIterator[dict[str, Any]]:
@@ -135,16 +152,30 @@ class FakeClient:
         *,
         model: str,
         agent: str | None = None,
+        directory: str | None = None,
     ) -> None:
         self.order.append("prompt")
         self.prompts.append((session_id, prompt, agent))
+        self.directories["prompt"].append(directory)
 
-    async def get_messages(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: int = 50,
+        *,
+        directory: str | None = None,
+    ) -> list[dict[str, Any]]:
         self.message_requests.append(session_id)
+        self.directories["messages"].append(directory)
         return self.messages
 
-    async def list_permissions(self) -> list[PermissionRequest]:
+    async def list_permissions(
+        self,
+        *,
+        directory: str | None = None,
+    ) -> list[PermissionRequest]:
         self.permission_list_calls += 1
+        self.directories["permissions"].append(directory)
         return self.permissions
 
     async def reply_permission(
@@ -152,12 +183,16 @@ class FakeClient:
         request_id: str,
         reply: str,
         message: str | None = None,
+        *,
+        directory: str | None = None,
     ) -> bool:
         self.replies.append((request_id, reply, message))
+        self.directories["reply"].append(directory)
         return True
 
-    async def abort(self, session_id: str) -> bool:
+    async def abort(self, session_id: str, *, directory: str | None = None) -> bool:
         self.aborted.append(session_id)
+        self.directories["abort"].append(directory)
         return True
 
     async def close(self) -> None:
@@ -201,19 +236,24 @@ async def test_manager_ensure_running_is_lazy_and_runs_once() -> None:
     class FakeManager:
         def __init__(self) -> None:
             self.calls = 0
+            self.directories: list[str | None] = []
 
-        async def ensure_running(self) -> None:
+        async def ensure_running(self, *, directory: str | None = None) -> None:
             self.calls += 1
+            self.directories.append(directory)
 
     manager = FakeManager()
     client = FakeClient(streams=[[_delta("a"), _idle()], [_delta("b"), _idle()]])
     backend = _backend(client, manager=manager)
 
     assert manager.calls == 0
-    await backend.execute(prompt="a", model="openai/gpt", session_id=None)
+    await backend.execute(
+        prompt="a", model="openai/gpt", session_id=None, workdir="C:/conv/project"
+    )
     await backend.execute(prompt="b", model="openai/gpt", session_id=None)
 
     assert manager.calls == 1
+    assert manager.directories == ["C:/conv/project"]
 
 
 # ── Text accumulation + progress ──────────────────────────────────────────
@@ -435,3 +475,149 @@ async def test_reconnect_backoff_reconciles_pending_permissions() -> None:
     assert client.permission_list_calls >= 1
     assert [request.id for request in requests] == ["per_reconciled"]
     assert client.replies == [("per_reconciled", "once", None)]
+
+
+# -- Directory scoping (regression: silent hang on the wrong workdir) ------
+
+WORKDIR = "C:/conv/project"
+
+
+async def test_workdir_is_forwarded_to_session_stream_and_prompt() -> None:
+    client = FakeClient(streams=[[_delta("ok"), _idle()]])
+
+    result = await _backend(client).execute(
+        prompt="x",
+        model="openai/gpt",
+        session_id=None,
+        workdir=WORKDIR,
+    )
+
+    assert result.stdout == "ok"
+    assert client.directories["create"] == [WORKDIR]
+    assert client.directories["stream"] == [WORKDIR]
+    assert client.directories["prompt"] == [WORKDIR]
+
+
+async def test_fallback_and_permission_reply_use_the_same_workdir() -> None:
+    async def handler(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision(reply="once")
+
+    client = FakeClient(streams=[[_permission(), _idle()]], messages=[])
+
+    result = await _backend(client, permission_handler=handler).execute(
+        prompt="x",
+        model="openai/gpt",
+        session_id=None,
+        workdir=WORKDIR,
+    )
+
+    assert result.stdout == ""
+    assert client.directories["reply"] == [WORKDIR]
+    assert client.directories["messages"] == [WORKDIR]
+
+
+async def test_abort_uses_the_workdir() -> None:
+    client = FakeClient(streams=[[_delta("a"), _Hang()]])
+
+    result = await _backend(client, first_event_timeout=5.0).execute(
+        prompt="x",
+        model="openai/gpt",
+        session_id=None,
+        workdir=WORKDIR,
+        timeout=1,
+    )
+
+    assert result.timed_out is True
+    assert client.directories["abort"] == [WORKDIR]
+
+
+# -- Bounded setup: never hang silently -----------------------------------
+
+
+class _NeverConnectClient(FakeClient):
+    def stream_events(
+        self,
+        *,
+        on_connect: Any = None,
+        directory: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.directories["stream"].append(directory)
+        return self._never(on_connect)
+
+    async def _never(self, on_connect: Any) -> AsyncIterator[dict[str, Any]]:
+        await asyncio.sleep(3600)
+        yield {}  # pragma: no cover
+
+
+async def test_sse_connect_timeout_raises_instead_of_hanging() -> None:
+    client = _NeverConnectClient()
+    backend = _backend(client, connect_timeout=0.05)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(OpenCodeStreamError):
+        await backend.execute(prompt="x", model="openai/gpt", session_id=None, workdir=WORKDIR)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.0
+    assert client.prompts == []
+
+
+class _HangingCreateClient(FakeClient):
+    async def create_session(self, title: str, *, directory: str | None = None) -> str:
+        await asyncio.sleep(3600)
+        return SID  # pragma: no cover
+
+
+async def test_create_session_timeout_raises_typed_error() -> None:
+    client = _HangingCreateClient()
+    backend = _backend(client, request_timeout=0.05)
+
+    with pytest.raises(OpenCodeUnavailableError) as exc_info:
+        await backend.execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert "0.05s" in str(exc_info.value)
+
+
+class _HangingPromptClient(FakeClient):
+    async def send_prompt(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        model: str,
+        agent: str | None = None,
+        directory: str | None = None,
+    ) -> None:
+        self.directories["prompt"].append(directory)
+        await asyncio.sleep(3600)
+
+
+async def test_send_prompt_timeout_raises_typed_error() -> None:
+    client = _HangingPromptClient(streams=[[_Hang()]])
+    backend = _backend(client, request_timeout=0.05)
+
+    with pytest.raises(OpenCodeUnavailableError) as exc_info:
+        await backend.execute(prompt="x", model="openai/gpt", session_id=None, workdir=WORKDIR)
+
+    assert "0.05s" in str(exc_info.value)
+
+
+async def test_no_event_after_prompt_raises_stream_error() -> None:
+    """The old backend waited the full idle timeout (1200s) in silence."""
+    client = FakeClient(streams=[[_Hang()]])
+    backend = _backend(client, first_event_timeout=0.05)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(OpenCodeStreamError):
+        await backend.execute(
+            prompt="x",
+            model="openai/gpt",
+            session_id=None,
+            workdir=WORKDIR,
+            timeout=5,
+        )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.0
+    assert client.directories["stream"] == [WORKDIR]
+    assert client.directories["prompt"] == [WORKDIR]

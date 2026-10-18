@@ -5,7 +5,10 @@ OpenCode 1.19.1 on Windows).
 
 Design notes:
   - One ``httpx.AsyncClient`` with Basic auth user ``opencode``.
-  - Every request carries ``?directory=<absolute posix path>``.
+  - Every request carries ``?directory=<absolute posix path>``. The directory
+    can be overridden per call: the server scopes sessions, events, and
+    permissions by it, so a shared server must be addressed with the
+    CONVERSATION's workdir (not the process cwd).
   - Idempotent GETs retry twice (0.5s / 1s). Prompts and permission replies
     NEVER retry blindly: a duplicate prompt or reply has real side effects.
   - ``stream_events()`` parses SSE framing (``data:`` lines, blank-line
@@ -59,7 +62,7 @@ class OpenCodeServerClient:
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._directory = Path(directory).as_posix()
+        self._default_directory = Path(directory).as_posix()
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             auth=httpx.BasicAuth(AUTH_USERNAME, password),
@@ -69,6 +72,11 @@ class OpenCodeServerClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    @property
+    def directory(self) -> str:
+        """The default ``?directory=`` used when a call does not override it."""
+        return self._default_directory
 
     # ── Endpoints ──────────────────────────────────────────────────────────
 
@@ -80,9 +88,19 @@ class OpenCodeServerClient:
         except OpenCodeServerError:
             return False
 
-    async def create_session(self, title: str) -> str:
+    async def create_session(
+        self,
+        title: str,
+        *,
+        directory: str | Path | None = None,
+    ) -> str:
         """Create a session and return its server-assigned id."""
-        response = await self._request("POST", "/session", json={"title": title})
+        response = await self._request(
+            "POST",
+            "/session",
+            json={"title": title},
+            directory=directory,
+        )
         data = self._json_object(response)
         session_id = data.get("id")
         if not isinstance(session_id, str) or not session_id:
@@ -96,6 +114,7 @@ class OpenCodeServerClient:
         *,
         model: str,
         agent: str | None = None,
+        directory: str | Path | None = None,
     ) -> None:
         """Queue an async prompt (``POST /session/{id}/prompt_async`` -> 204)."""
         body: dict[str, Any] = {
@@ -104,13 +123,25 @@ class OpenCodeServerClient:
         }
         if agent:
             body["agent"] = agent
-        await self._request("POST", f"/session/{session_id}/prompt_async", json=body)
+        await self._request(
+            "POST",
+            f"/session/{session_id}/prompt_async",
+            json=body,
+            directory=directory,
+        )
 
-    async def get_messages(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: int = 50,
+        *,
+        directory: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the session's messages (oldest first, as the server sends)."""
         response = await self._get(
             f"/session/{session_id}/message",
             params={"limit": limit},
+            directory=directory,
         )
         raw: object = response.json()
         if not isinstance(raw, list):
@@ -122,9 +153,13 @@ class OpenCodeServerClient:
             messages.append(cast(dict[str, Any], item))
         return messages
 
-    async def list_permissions(self) -> list[PermissionRequest]:
+    async def list_permissions(
+        self,
+        *,
+        directory: str | Path | None = None,
+    ) -> list[PermissionRequest]:
         """Return the pending permission requests (``GET /permission``)."""
-        response = await self._get("/permission")
+        response = await self._get("/permission", directory=directory)
         raw: object = response.json()
         if not isinstance(raw, list):
             raise OpenCodeUnavailableError("Respuesta inválida de /permission.")
@@ -135,25 +170,41 @@ class OpenCodeServerClient:
         request_id: str,
         reply: Reply,
         message: str | None = None,
+        *,
+        directory: str | Path | None = None,
     ) -> bool:
         """Answer a permission request (``POST /permission/{id}/reply``)."""
         body: dict[str, Any] = {"reply": reply}
         if message is not None:
             body["message"] = message
-        response = await self._request("POST", f"/permission/{request_id}/reply", json=body)
+        response = await self._request(
+            "POST",
+            f"/permission/{request_id}/reply",
+            json=body,
+            directory=directory,
+        )
         try:
             return response.json() is True
         except ValueError as exc:
             raise OpenCodeUnavailableError("Respuesta inválida de /permission/{id}/reply.") from exc
 
-    async def abort(self, session_id: str) -> bool:
+    async def abort(
+        self,
+        session_id: str,
+        *,
+        directory: str | Path | None = None,
+    ) -> bool:
         """Best-effort abort (endpoint tentative; 404 means 'not supported').
 
         Returns False instead of raising on 404 so callers can fall back to
         closing the SSE stream and documenting that the turn may finish.
         """
         try:
-            await self._request("POST", f"/session/{session_id}/abort")
+            await self._request(
+                "POST",
+                f"/session/{session_id}/abort",
+                directory=directory,
+            )
         except OpenCodeRequestError as exc:
             if exc.status_code == 404:
                 return False
@@ -164,6 +215,7 @@ class OpenCodeServerClient:
         self,
         *,
         on_connect: Callable[[], None] | None = None,
+        directory: str | Path | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield filtered SSE events as ``{"id", "type", "properties"}``.
 
@@ -175,11 +227,15 @@ class OpenCodeServerClient:
         connection is established) but before any event is consumed. The
         backend uses it to guarantee the stream is open *before* sending a
         prompt, closing the verified ``permission.asked`` race.
+
+        ``directory`` scopes the stream: the server only publishes the events
+        of that project. It MUST match the directory the session belongs to,
+        otherwise the stream connects successfully but stays silent forever.
         """
         async with self._client.stream(
             "GET",
             "/event",
-            params=self._params(),
+            params=self._params(directory),
             timeout=_SSE_TIMEOUT,
         ) as response:
             if response.status_code >= 400:
@@ -208,8 +264,17 @@ class OpenCodeServerClient:
 
     # ── Internals ──────────────────────────────────────────────────────────
 
-    def _params(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {"directory": self._directory}
+    def _resolve_directory(self, directory: str | Path | None) -> str:
+        if directory is None:
+            return self._default_directory
+        return Path(directory).as_posix()
+
+    def _params(
+        self,
+        directory: str | Path | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"directory": self._resolve_directory(directory)}
         if extra:
             params.update(extra)
         return params
@@ -221,13 +286,14 @@ class OpenCodeServerClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        directory: str | Path | None = None,
     ) -> httpx.Response:
         """Single request, typed errors, no automatic retries."""
         try:
             response = await self._client.request(
                 method,
                 path,
-                params=self._params(params),
+                params=self._params(directory, params),
                 json=json,
             )
         except httpx.HTTPError as exc:
@@ -243,12 +309,19 @@ class OpenCodeServerClient:
         self,
         path: str,
         params: dict[str, Any] | None = None,
+        *,
+        directory: str | Path | None = None,
     ) -> httpx.Response:
         """Idempotent GET: retry transport/5xx failures twice."""
         last_error: OpenCodeUnavailableError | None = None
         for attempt in range(GET_ATTEMPTS):
             try:
-                return await self._request("GET", path, params=params)
+                return await self._request(
+                    "GET",
+                    path,
+                    params=params,
+                    directory=directory,
+                )
             except OpenCodeUnavailableError as exc:
                 last_error = exc
                 if attempt < len(_RETRY_DELAYS):

@@ -8,6 +8,7 @@ policy decisions without inspecting strings:
   - ``OpenCodeAuthError``           -> credentials rejected (never retry)
   - ``OpenCodeRequestError``        -> 4xx from the API (never retry)
   - ``OpenCodeUnavailableError``    -> transport failure / 5xx (may retry)
+  - ``OpenCodeStreamError``         -> the SSE stream never opened / went silent
 
 ``OpenCodeServerError`` is the common base so a broad ``except`` can keep the
 supervisor alive without swallowing unrelated programming errors.
@@ -52,3 +53,16 @@ class OpenCodeUnavailableError(OpenCodeServerError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class OpenCodeStreamError(OpenCodeServerError):
+    """The SSE stream could not be established, or delivered no events.
+
+    Raised instead of waiting forever: a stream opened against the wrong
+    ``directory`` (or a server that never emits) must fail with a typed,
+    logged error rather than hang until the prompt idle timeout.
+    """
+
+    def __init__(self, message: str, *, directory: str | None = None) -> None:
+        super().__init__(message)
+        self.directory = directory

@@ -92,8 +92,13 @@ class OpenCodeServerManager:
         except httpx.HTTPError:
             return False
 
-    async def ensure_running(self) -> None:
+    async def ensure_running(self, *, directory: str | Path | None = None) -> None:
         """Adopt a healthy server, or spawn one and wait until it is healthy.
+
+        ``directory`` is the CONVERSATION's workdir when known: it becomes the
+        spawn cwd for a server this call starts. An already-healthy server is
+        adopted untouched — routing is per request (``?directory=``), so a
+        shared process can serve several project folders.
 
         Raises ``OpenCodeServerConfigError`` immediately when the password is
         empty (the server would reject every authenticated route) and
@@ -109,7 +114,7 @@ class OpenCodeServerManager:
             )
             return
 
-        await self.start()
+        await self.start(directory=directory)
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._config.timeout
@@ -131,17 +136,20 @@ class OpenCodeServerManager:
             f"El servidor OpenCode no respondió en {self._config.timeout:g}s ({self.base_url})."
         )
 
-    async def start(self) -> None:
+    async def start(self, *, directory: str | Path | None = None) -> None:
         """Spawn ``opencode serve`` and start draining its output.
 
-        Idempotent while the tracked process is alive: a second call is a
-        no-op, so the supervisor cannot spawn duplicates.
+        ``directory`` overrides the configured cwd for this spawn (used for
+        the conversation's project). Idempotent while the tracked process is
+        alive: a second call is a no-op, so the supervisor cannot spawn
+        duplicates.
         """
         self._require_password()
 
         if self._process is not None and self._process.returncode is None:
             return
 
+        workdir = Path(directory) if directory is not None else Path(self._config.directory)
         cmd = self._build_command()
         env = os.environ.copy()
         env["OPENCODE_SERVER_PASSWORD"] = self._config.password
@@ -149,7 +157,7 @@ class OpenCodeServerManager:
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
-                cwd=str(self._config.directory),
+                cwd=str(workdir),
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -170,7 +178,7 @@ class OpenCodeServerManager:
                 "base_url": self.base_url,
                 "pid": process.pid,
                 "binary": self._config.binary,
-                "workdir": str(self._config.directory),
+                "workdir": str(workdir),
             },
         )
 

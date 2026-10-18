@@ -25,6 +25,8 @@ from services.ai_provider_factory import AIProviderFactory
 from services.composition import CoreStack, build_prompt_stack
 from services.conversations_service import ConversationsService
 from services.opencode_cli_backend import OpenCodeCLIBackend
+from services.opencode_server import OpenCodeServerClient, OpenCodeServerManager
+from services.opencode_server_backend import OpenCodeServerBackend
 from services.prompt_service import PromptService
 from services.session_service import SessionService
 from services.session_store import SessionStore
@@ -97,7 +99,10 @@ def test_sessions_directory_is_injected(tmp_path: Path) -> None:
 
 
 def test_opencode_provider_is_registered(tmp_path: Path) -> None:
-    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        backend="cli",
+    )
 
     assert core.provider_factory.list_providers() == ["opencode"]
     backend = core.provider_factory.create("opencode")
@@ -105,11 +110,65 @@ def test_opencode_provider_is_registered(tmp_path: Path) -> None:
 
 
 def test_default_provider_resolves_to_opencode_backend(tmp_path: Path) -> None:
-    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        backend="cli",
+    )
 
     # create() with no provider name must fall back to the default provider,
     # which was registered as OpenCodeCLIBackend.
     assert isinstance(core.provider_factory.create(), OpenCodeCLIBackend)
+
+
+# ── Transport selection (server vs cli) ───────────────────────────────
+
+
+def test_server_backend_is_the_default(tmp_path: Path) -> None:
+    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
+
+    assert core.backend == "server"
+    assert isinstance(core.server_manager, OpenCodeServerManager)
+    assert isinstance(core.server_client, OpenCodeServerClient)
+    assert isinstance(core.provider_factory.create("opencode"), OpenCodeServerBackend)
+
+
+def test_server_selection_is_lazy_and_does_not_spawn(tmp_path: Path) -> None:
+    core = build_prompt_stack(sessions_path=tmp_path / "sessions.json")
+
+    assert core.server_manager is not None
+    assert core.server_manager.is_owned is False
+
+
+def test_cli_selection_has_no_server_pieces(tmp_path: Path) -> None:
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        backend="cli",
+    )
+
+    assert core.backend == "cli"
+    assert core.server_manager is None
+    assert core.server_client is None
+
+
+def test_injected_server_client_is_wired_into_the_backend(tmp_path: Path) -> None:
+    sentinel = object()
+    core = build_prompt_stack(
+        sessions_path=tmp_path / "sessions.json",
+        server_client=sentinel,  # type: ignore[arg-type]
+    )
+
+    assert core.server_client is sentinel
+    backend = core.provider_factory.create("opencode")
+    assert isinstance(backend, OpenCodeServerBackend)
+    assert backend._client is sentinel
+
+
+def test_invalid_backend_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="OPENCODE_BACKEND"):
+        build_prompt_stack(
+            sessions_path=tmp_path / "sessions.json",
+            backend="nope",
+        )
 
 
 # ── start_time ownership ──────────────────────────────────────────────

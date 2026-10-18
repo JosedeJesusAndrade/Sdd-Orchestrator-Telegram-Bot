@@ -18,7 +18,13 @@ from pathlib import Path
 
 from config import (
     BASE_DIR,
+    OPENCODE_BACKEND,
     OPENCODE_CMD,
+    OPENCODE_PERMISSION_TIMEOUT,
+    OPENCODE_SERVER_BINARY,
+    OPENCODE_SERVER_HOST,
+    OPENCODE_SERVER_PASSWORD,
+    OPENCODE_SERVER_PORT,
     OPENCODE_TIMEOUT,
     OPENCODE_WORKDIR,
     SESSIONS_PATH,
@@ -29,6 +35,12 @@ from services.ai_provider_factory import AIProviderFactory
 from services.conversations_service import ConversationsService
 from services.health_service import HealthService
 from services.opencode_cli_backend import OpenCodeCLIBackend
+from services.opencode_server import (
+    OpenCodeServerClient,
+    OpenCodeServerManager,
+    ServerConfig,
+)
+from services.opencode_server_backend import OpenCodeServerBackend, PermissionHandler
 from services.prompt_service import PromptService
 from services.session_service import SessionService
 from services.session_store import SessionStore
@@ -54,6 +66,11 @@ class CoreStack:
     agent_sessions: AgentSessions
     conversations_service: ConversationsService
     start_time: float
+    backend: str = OPENCODE_BACKEND
+    permission_timeout: int = OPENCODE_PERMISSION_TIMEOUT
+    # Server-mode only; both stay ``None`` with ``OPENCODE_BACKEND=cli``.
+    server_manager: OpenCodeServerManager | None = None
+    server_client: OpenCodeServerClient | None = None
 
 
 def build_prompt_stack(
@@ -65,6 +82,15 @@ def build_prompt_stack(
     timeout: int = OPENCODE_TIMEOUT,
     sessions_directory: str | Path = BASE_DIR,
     start_time: float | None = None,
+    backend: str = OPENCODE_BACKEND,
+    server_host: str = OPENCODE_SERVER_HOST,
+    server_port: int = OPENCODE_SERVER_PORT,
+    server_password: str = OPENCODE_SERVER_PASSWORD,
+    server_binary: str = OPENCODE_SERVER_BINARY,
+    permission_timeout: int = OPENCODE_PERMISSION_TIMEOUT,
+    permission_handler: PermissionHandler | None = None,
+    server_client: OpenCodeServerClient | None = None,
+    server_manager: OpenCodeServerManager | None = None,
 ) -> CoreStack:
     """Build the frontend-agnostic core graph.
 
@@ -73,18 +99,59 @@ def build_prompt_stack(
 
     Registers the ``"opencode"`` provider (moved out of ``bot.py``) and owns
     ``start_time`` — both frontends therefore share uptime semantics.
+
+    ``backend`` selects the transport:
+      - ``"server"`` (default): ``opencode serve`` over HTTP with SSE.
+      - ``"cli"``: the one-shot ``opencode run`` subprocess (rollback path).
+
+    Server construction is LAZY: creating the manager/client opens no socket
+    and spawns no process. ``OpenCodeServerBackend`` calls
+    ``manager.ensure_running()`` on its first ``execute``.
     """
+    selected_backend = backend.strip().lower()
+    if selected_backend not in {"server", "cli"}:
+        raise ValueError(
+            f"OPENCODE_BACKEND inválido: {backend!r}. Valores permitidos: 'server', 'cli'."
+        )
+
     session_store = SessionStore(Path(sessions_path))
     resolved_start_time = time.time() if start_time is None else start_time
 
     provider_factory = AIProviderFactory(default_provider=default_provider)
-    provider_factory.register(
-        "opencode",
-        OpenCodeCLIBackend,
-        opencode_cmd=opencode_cmd,
-        workdir=workdir,
-        timeout=timeout,
-    )
+    manager: OpenCodeServerManager | None = None
+    client: OpenCodeServerClient | None = None
+
+    if selected_backend == "server":
+        manager = server_manager or OpenCodeServerManager(
+            ServerConfig(
+                host=server_host,
+                port=server_port,
+                password=server_password,
+                binary=server_binary,
+                directory=workdir,
+            )
+        )
+        client = server_client or OpenCodeServerClient(
+            manager.base_url,
+            server_password,
+            workdir,
+        )
+        provider_factory.register(
+            "opencode",
+            OpenCodeServerBackend,
+            client=client,
+            permission_handler=permission_handler,
+            timeout=timeout,
+            manager=manager,
+        )
+    else:
+        provider_factory.register(
+            "opencode",
+            OpenCodeCLIBackend,
+            opencode_cmd=opencode_cmd,
+            workdir=workdir,
+            timeout=timeout,
+        )
 
     prompt_service = PromptService(
         session_store=session_store,
@@ -110,4 +177,8 @@ def build_prompt_stack(
         agent_sessions=agent_sessions,
         conversations_service=conversations_service,
         start_time=resolved_start_time,
+        backend=selected_backend,
+        permission_timeout=permission_timeout,
+        server_manager=manager,
+        server_client=client,
     )

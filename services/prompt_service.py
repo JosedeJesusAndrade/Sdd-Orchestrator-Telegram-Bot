@@ -36,8 +36,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from config import (
@@ -183,27 +183,40 @@ class PromptService:
             # 2. Open the "Processing..." progress placeholder via the view
             handle = await view.start_progress("\u23f3 OpenCode procesando...")
 
-            progress_task = asyncio.create_task(self._update_progress(handle))
+            # F3: one backend instance per conversation, created before the
+            # ticker decision so a live-progress backend can replace the
+            # elapsed-time ticker with real streamed text.
+            backend = await self._create_backend(conversation_id)
+            live_progress = getattr(backend, "supports_live_progress", False)
+
+            progress_task: asyncio.Task[Any] | None = None
+            if not live_progress:
+                progress_task = asyncio.create_task(self._update_progress(handle))
 
             # Check if cancelled during session sync (before backend execution)
             if conversation_id in self._cancel:
                 # Stop the periodic updater BEFORE painting the terminal state.
                 # Otherwise it would keep ticking and overwrite "Cancelado."
                 # with "⏳ OpenCode procesando... (Ns)".
-                await self._stop_progress(progress_task)
+                if progress_task is not None:
+                    await self._stop_progress(progress_task)
                 await handle.error("\u23f9\ufe0f Cancelado.")
                 return ""
 
             # 3. Execute OpenCode via AI backend
-            result = await self._execute_prompt(
-                conversation_id,
-                prompt_text,
-                session,
-                model,
-                view.source_label,
-            )
-
-            await self._stop_progress(progress_task)
+            try:
+                result = await self._execute_prompt(
+                    conversation_id,
+                    prompt_text,
+                    session,
+                    model,
+                    view.source_label,
+                    backend=backend,
+                    on_progress=handle.update if live_progress else None,
+                )
+            finally:
+                if progress_task is not None:
+                    await self._stop_progress(progress_task)
 
             # 4. Deliver response
             await self._deliver_response(conversation_id, result, handle, view, session)
@@ -246,6 +259,19 @@ class PromptService:
 
     # ── Internal: AI backend execution ──────────────────────────────
 
+    async def _create_backend(self, conversation_id: ConversationId) -> AIBackend:
+        """Resolve the per-chat provider and build a fresh backend instance.
+
+        F3: one backend instance per conversation. Stored BEFORE the cancel
+        check so a cancel arriving during settings resolution targets *this*
+        conversation's backend (and, if the process has not started yet, at
+        worst cancels a process-less instance — a harmless no-op).
+        """
+        provider = await self._store.get_chat_setting(conversation_id, "provider", "opencode")
+        backend = self._factory.create(provider)
+        self._backends[conversation_id] = backend
+        return backend
+
     async def _execute_prompt(
         self,
         conversation_id: ConversationId,
@@ -253,27 +279,21 @@ class PromptService:
         session: SessionInfo | None,
         model: str,
         source_label: str = "",
+        *,
+        backend: AIBackend,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
-        """Execute prompt via the AI provider factory.
+        """Execute prompt via the resolved AI backend.
 
-        Reads per-chat settings (provider, timeout, workdir) from
-        SessionStore. Resolves the correct AI backend via the factory.
+        Reads per-chat settings (timeout, workdir, agent) from SessionStore.
 
         Returns a dict with keys: stdout, stderr, returncode, cancelled.
         """
-        provider = await self._store.get_chat_setting(conversation_id, "provider", "opencode")
         timeout_val = await self._store.get_chat_setting(
             conversation_id, "timeout", OPENCODE_TIMEOUT
         )
         workdir = await self._store.get_chat_setting(conversation_id, "workdir", OPENCODE_WORKDIR)
         agent = await self._store.get_chat_setting(conversation_id, "agent", "sdd-orchestrator")
-
-        # F3: one backend instance per conversation. Store it BEFORE the
-        # cancel check so a cancel arriving during settings resolution targets
-        # *this* conversation's backend (and, if the process has not started
-        # yet, at worst cancels a process-less instance — a harmless no-op).
-        backend = self._factory.create(provider)
-        self._backends[conversation_id] = backend
 
         # Check if cancelled during settings resolution (before subprocess)
         if conversation_id in self._cancel:
@@ -285,15 +305,29 @@ class PromptService:
                 "session_id": None,
             }
 
-        result = await backend.execute(
-            prompt=prompt,
-            model=model,
-            session_id=session.real_id if session else None,
-            agent=agent,
-            workdir=str(workdir),
-            source_label=source_label,
-            timeout=timeout_val,
-        )
+        # ``on_progress`` is only forwarded when the backend streams: the CLI
+        # backend (and test doubles) accept it, but there is nothing to push.
+        if on_progress is None:
+            result = await backend.execute(
+                prompt=prompt,
+                model=model,
+                session_id=session.real_id if session else None,
+                agent=agent,
+                workdir=str(workdir),
+                source_label=source_label,
+                timeout=timeout_val,
+            )
+        else:
+            result = await backend.execute(
+                prompt=prompt,
+                model=model,
+                session_id=session.real_id if session else None,
+                agent=agent,
+                workdir=str(workdir),
+                source_label=source_label,
+                timeout=timeout_val,
+                on_progress=on_progress,
+            )
         return {
             "stdout": result.stdout,
             "stderr": result.stderr,
@@ -373,9 +407,7 @@ class PromptService:
             await handle.error(f"\u274c Error (c\u00f3digo {result['returncode']}).")
 
         # Capture session ID for new sessions
-        await self._capture_session_id(
-            conversation_id, result.get("session_id"), result["stdout"], session
-        )
+        await self._persist_session_id(conversation_id, result.get("session_id"))
 
         # Increment prompt count
         try:
@@ -391,32 +423,23 @@ class PromptService:
                 exc_info=True,
             )
 
-    async def _capture_session_id(
+    async def _persist_session_id(
         self,
         conversation_id: ConversationId,
         session_id: str | None,
-        stdout: str,
-        session: SessionInfo | None,
     ) -> None:
         """Persist the real OpenCode session ID so the next prompt continues it.
 
-        The primary source is ``AIBackendResult.session_id``, parsed from the
-        CLI's ``--format json`` events (the default format never printed the
-        ID). The stdout regex remains ONLY as a last-resort fallback for the
-        raw-stdout path (JSON version drift): the raw event lines still carry
-        ``"sessionID":"ses_..."`` even when the parser can't decode them.
+        Both transports return the id EXPLICITLY (CLI JSON events, or the
+        server-created session), so there is no stdout regex anymore: an
+        absent ``session_id`` simply means "nothing to persist".
         """
-        real_id = session_id
-        if not real_id:
-            match = re.search(r"(ses_[a-zA-Z0-9]+)", stdout)
-            if match:
-                real_id = match.group(1)
-        if not real_id:
+        if not session_id:
             return
 
         active = await self._store.get_active_session(conversation_id)
         if active is not None and not active.real_id:
-            await self._store.update_session_id(conversation_id, real_id)
+            await self._store.update_session_id(conversation_id, session_id)
             from utils.logging import mask_chat_id
 
             logger.info(

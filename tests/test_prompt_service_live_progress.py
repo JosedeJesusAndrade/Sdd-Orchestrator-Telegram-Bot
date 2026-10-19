@@ -12,8 +12,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from services.ai_backend import AIBackendResult
 from services.chat_view import ConversationId
+from services.opencode_server.errors import OpenCodeStreamError
 from services.prompt_service import PromptService
 from services.session_store import SessionInfo
 
@@ -161,6 +164,39 @@ async def test_cli_backend_keeps_the_ticker(monkeypatch) -> None:
     assert backend.received_on_progress is None
     assert view.handle.updates
     assert all("procesando" in text for text in view.handle.updates)
+
+
+async def test_final_text_is_delivered_and_placeholder_finishes() -> None:
+    backend = _Backend(live=True, result=AIBackendResult(stdout="Respuesta final"), delay=0.0)
+    view = _View()
+    service = PromptService(
+        session_store=_Store(_session("ses_existing")), provider_factory=_Factory(backend)
+    )
+
+    await service.execute(conversation_id=1, prompt_text="hola", view=view)
+
+    assert view.sent == ["Respuesta final"]
+    assert view.handle.finished == ["\u2705 Completado."]
+
+
+class _FailingBackend(_Backend):
+    async def execute(self, *args: Any, **kwargs: Any) -> AIBackendResult:
+        raise OpenCodeStreamError("El turno no terminó a tiempo.")
+
+
+async def test_backend_failure_replaces_the_placeholder_and_reraises() -> None:
+    view = _View()
+    service = PromptService(
+        session_store=_Store(_session(None)),
+        provider_factory=_Factory(_FailingBackend(live=True, result=AIBackendResult())),
+    )
+
+    with pytest.raises(OpenCodeStreamError):
+        await service.execute(conversation_id=1, prompt_text="hola", view=view)
+
+    assert view.handle.errors
+    assert view.handle.errors[0].startswith("\u274c Error:")
+    assert not view.handle.finished
 
 
 async def test_session_id_is_not_scraped_from_stdout() -> None:

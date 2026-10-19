@@ -51,6 +51,54 @@ def _idle(event_id: str = "") -> dict[str, Any]:
     return _event("session.idle", {"sessionID": SID}, event_id)
 
 
+def _status(status_type: str) -> dict[str, Any]:
+    return _event("session.status", {"sessionID": SID, "status": {"type": status_type}})
+
+
+def _message_updated(
+    message_id: str,
+    role: str,
+    *,
+    completed: bool = False,
+    finish: str | None = None,
+    event_id: str = "",
+) -> dict[str, Any]:
+    info: dict[str, Any] = {"id": message_id, "role": role, "sessionID": SID}
+    if completed:
+        info["time"] = {"created": 1, "completed": 2}
+    if finish is not None:
+        info["finish"] = finish
+    return _event("message.updated", {"sessionID": SID, "info": info}, event_id)
+
+
+def _part(
+    part_id: str,
+    part_type: str,
+    text: str = "",
+    *,
+    message_id: str | None = None,
+    event_id: str = "",
+) -> dict[str, Any]:
+    part: dict[str, Any] = {
+        "id": part_id,
+        "type": part_type,
+        "text": text,
+        "sessionID": SID,
+    }
+    if message_id is not None:
+        part["messageID"] = message_id
+    return _event("message.part.updated", {"sessionID": SID, "part": part}, event_id)
+
+
+def _reasoning_delta(text: str, *, part_id: str = "p_r", event_id: str = "") -> dict[str, Any]:
+    """Live 1.19.1 sends ``field="text"`` for reasoning deltas too."""
+    return _event(
+        "message.part.delta",
+        {"sessionID": SID, "partID": part_id, "field": "text", "delta": text},
+        event_id,
+    )
+
+
 def _permission(
     request_id: str = "per_1",
     *,
@@ -304,6 +352,130 @@ async def test_idle_stops_consuming_the_stream() -> None:
     assert result.stdout == "antes"
 
 
+async def test_prompt_and_reasoning_are_excluded_from_the_final_text() -> None:
+    """Regression: the user prompt and chain of thought leaked into stdout.
+
+    Live evidence: ``message.part.delta`` uses ``field="text"`` for reasoning
+    parts, and the user's prompt is a ``text`` part too. Only assistant text
+    parts may reach ``AIBackendResult.stdout``.
+    """
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_u", "user"),
+                _part("p_u", "text", "haz un commit", message_id="msg_u"),
+                _message_updated("msg_a", "assistant"),
+                _part("p_r", "reasoning", ""),
+                _reasoning_delta("pensando paso a paso...", part_id="p_r"),
+                _part("p_r", "reasoning", "pensando paso a paso..."),
+                _part("p_t", "text", ""),
+                _delta("Listo", part_id="p_t"),
+                _part("p_t", "text", "Listo", message_id="msg_a"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Listo"
+
+
+async def test_progress_uses_reasoning_then_text_but_final_is_text_only() -> None:
+    seen: list[str] = []
+
+    async def progress(text: str) -> None:
+        seen.append(text)
+
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_a", "assistant"),
+                _part("p_r", "reasoning", ""),
+                _reasoning_delta("pensando", part_id="p_r"),
+                _part("p_t", "text", ""),
+                _delta("Respuesta", part_id="p_t"),
+                _part("p_t", "text", "Respuesta", message_id="msg_a"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(
+        prompt="x",
+        model="openai/gpt",
+        session_id=None,
+        on_progress=progress,
+    )
+
+    assert seen[0] == "pensando"
+    assert seen[-1] == "Respuesta"
+    assert result.stdout == "Respuesta"
+    assert "pensando" not in result.stdout
+
+
+async def test_session_status_idle_terminates_without_session_idle() -> None:
+    client = FakeClient(streams=[[_delta("Hola"), _status("idle")]])
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Hola"
+
+
+async def test_completed_assistant_message_terminates_without_session_idle() -> None:
+    """Missing ``session.idle`` must not hang: a final completed message ends it."""
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_a", "assistant"),
+                _delta("Hola", part_id="p1"),
+                _part("p1", "text", "Hola", message_id="msg_a"),
+                _message_updated("msg_a", "assistant", completed=True, finish="stop"),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Hola"
+
+
+async def test_tool_calls_finish_is_not_terminal() -> None:
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_a", "assistant"),
+                _delta("Paso 1", part_id="p1"),
+                _message_updated("msg_a", "assistant", completed=True, finish="tool-calls"),
+                _delta(" y 2", part_id="p2"),
+                _part("p2", "text", " y 2", message_id="msg_a"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Paso 1 y 2"
+
+
+async def test_session_error_raises_a_typed_error() -> None:
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_a", "assistant"),
+                _event(
+                    "session.error",
+                    {"sessionID": SID, "error": {"message": "proveedor caído"}},
+                ),
+            ]
+        ]
+    )
+
+    with pytest.raises(OpenCodeStreamError, match="proveedor caído"):
+        await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+
 # ── Fallback ──────────────────────────────────────────────────────────────
 
 
@@ -345,19 +517,18 @@ async def test_timeout_is_reset_by_every_event() -> None:
     assert result.stdout == "ab"
 
 
-async def test_idle_timeout_without_events_aborts() -> None:
+async def test_idle_timeout_without_terminal_event_raises_and_aborts() -> None:
+    """A silent turn must raise a typed error, never look frozen forever."""
     client = FakeClient(streams=[[_delta("a"), _Hang()]])
 
-    result = await _backend(client).execute(
-        prompt="x",
-        model="openai/gpt",
-        session_id=None,
-        timeout=1,
-    )
+    with pytest.raises(OpenCodeStreamError, match="no terminó"):
+        await _backend(client).execute(
+            prompt="x",
+            model="openai/gpt",
+            session_id=None,
+            timeout=1,
+        )
 
-    assert result.timed_out is True
-    assert result.returncode == -1
-    assert result.stdout == "a"
     assert client.aborted == [SID]
 
 
@@ -519,15 +690,15 @@ async def test_fallback_and_permission_reply_use_the_same_workdir() -> None:
 async def test_abort_uses_the_workdir() -> None:
     client = FakeClient(streams=[[_delta("a"), _Hang()]])
 
-    result = await _backend(client, first_event_timeout=5.0).execute(
-        prompt="x",
-        model="openai/gpt",
-        session_id=None,
-        workdir=WORKDIR,
-        timeout=1,
-    )
+    with pytest.raises(OpenCodeStreamError):
+        await _backend(client, first_event_timeout=5.0).execute(
+            prompt="x",
+            model="openai/gpt",
+            session_id=None,
+            workdir=WORKDIR,
+            timeout=1,
+        )
 
-    assert result.timed_out is True
     assert client.directories["abort"] == [WORKDIR]
 
 

@@ -214,6 +214,13 @@ class PromptService:
                     backend=backend,
                     on_progress=handle.update if live_progress else None,
                 )
+            except Exception as exc:
+                # A typed backend failure (stream stalled, session.error, ...)
+                # must replace the live placeholder instead of leaving it on
+                # "⏳" forever. The error is re-raised so the caller logs it.
+                with contextlib.suppress(Exception):
+                    await handle.error(f"\u274c Error: {exc}")
+                raise
             finally:
                 if progress_task is not None:
                     await self._stop_progress(progress_task)
@@ -384,6 +391,18 @@ class PromptService:
         # only when the WHOLE response reached the user (F8): a partially
         # delivered response is a failure for status purposes.
         response_sent = await view.send(response)
+
+        from utils.logging import mask_chat_id
+
+        logger.info(
+            "OpenCode response delivered",
+            extra={
+                "event": "opencode_response_delivered",
+                "chat_id_masked": mask_chat_id(conversation_id),
+                "response_length": len(response),
+                "delivered": response_sent,
+            },
+        )
 
         # Always reach a terminal state — the placeholder must never be left
         # stuck on "⏳". Before F8, an undelivered response called NEITHER

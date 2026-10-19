@@ -37,7 +37,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NoReturn, cast
 
 from services.ai_backend import AIBackendResult
@@ -64,6 +64,12 @@ DEFAULT_PROGRESS_TAIL = 600
 DEFAULT_RECONNECT_INITIAL = 0.5
 DEFAULT_RECONNECT_MAX = 5.0
 PHASE3_REJECT_MESSAGE = "Las aprobaciones se habilitan en la Fase 3."
+
+#: ``info.finish`` values that mean the assistant turn is over. ``tool-calls``
+#: is explicitly NOT final: the model will continue after the tool result.
+_FINAL_FINISHES = frozenset(
+    {"stop", "length", "content-filter", "content_filter", "end_turn", "end-turn"}
+)
 
 _STREAM_END = object()
 
@@ -111,6 +117,71 @@ class _ProgressEmitter:
                 module=__name__,
                 level=logging.DEBUG,
             )
+
+
+@dataclass
+class _TurnState:
+    """Per-turn accumulation split by part kind and message role.
+
+    Evidence from a live 1.19.1 SSE capture: ``message.part.delta`` events carry
+    ``field="text"`` for REASONING parts too, and the user's own prompt is
+    emitted as a ``text`` part. Accumulating every ``text`` part therefore
+    produced a final answer that started with the prompt and the whole chain of
+    thought (the reported "frozen" wrong response). Only assistant ``text``
+    parts are user-visible; reasoning is kept apart for live progress.
+    """
+
+    text_parts: dict[str, str] = field(default_factory=dict)
+    text_order: list[str] = field(default_factory=list)
+    reasoning_parts: dict[str, str] = field(default_factory=dict)
+    reasoning_order: list[str] = field(default_factory=list)
+    part_types: dict[str, str] = field(default_factory=dict)
+    part_messages: dict[str, str] = field(default_factory=dict)
+    message_roles: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def text(self) -> str:
+        """The final user-visible response (assistant text parts only)."""
+        return "".join(self.text_parts.get(part_id, "") for part_id in self.text_order)
+
+    @property
+    def reasoning(self) -> str:
+        return "".join(self.reasoning_parts.get(part_id, "") for part_id in self.reasoning_order)
+
+    @property
+    def progress(self) -> str:
+        """Live placeholder: visible text once it exists, reasoning before it."""
+        return self.text or self.reasoning
+
+    def set_part_type(self, part_id: str, part_type: str) -> None:
+        self.part_types[part_id] = part_type
+
+    def set_part_message(self, part_id: str, message_id: str) -> None:
+        self.part_messages[part_id] = message_id
+
+    def is_user_part(self, part_id: str) -> bool:
+        message_id = self.part_messages.get(part_id)
+        return message_id is not None and self.message_roles.get(message_id) == "user"
+
+    def set_text(self, part_id: str, text: str) -> None:
+        if part_id not in self.text_parts:
+            self.text_order.append(part_id)
+        self.text_parts[part_id] = text
+
+    def append_text(self, part_id: str, delta: str) -> None:
+        if part_id not in self.text_parts:
+            self.text_order.append(part_id)
+        self.text_parts[part_id] = self.text_parts.get(part_id, "") + delta
+
+    def set_reasoning(self, part_id: str, text: str) -> None:
+        if part_id not in self.reasoning_parts:
+            self.reasoning_order.append(part_id)
+        self.reasoning_parts[part_id] = text
+
+    def append_reasoning(self, part_id: str, delta: str) -> None:
+        if part_id not in self.reasoning_parts:
+            self.reasoning_order.append(part_id)
+        self.reasoning_parts[part_id] = self.reasoning_parts.get(part_id, "") + delta
 
 
 class OpenCodeServerBackend:
@@ -316,13 +387,14 @@ class OpenCodeServerBackend:
         pump = asyncio.create_task(self._pump(session_id, queue, connected, stop, directory))
         self._pump_task = pump
 
-        parts: dict[str, str] = {}
+        turn = _TurnState()
         seen_ids: set[str] = set()
         seen_order: deque[str] = deque()
         handled_permissions: set[str] = set()
         pending_permissions: set[asyncio.Task[None]] = set()
         last_error: Exception | None = None
         timed_out = False
+        terminal_event: str | None = None
 
         try:
             try:
@@ -435,14 +507,15 @@ class OpenCodeServerBackend:
 
                 saw_event = True
                 deadline = loop.time() + effective_timeout
-                idle = await self._process_event(
+                terminal = await self._process_event(
                     event,
                     session_id=session_id,
-                    parts=parts,
+                    turn=turn,
                     handled_permissions=handled_permissions,
                     pending_permissions=pending_permissions,
                 )
-                if idle:
+                if terminal is not None:
+                    terminal_event = terminal
                     break
 
             # Give an in-flight reply a chance to leave before we return.
@@ -453,25 +526,36 @@ class OpenCodeServerBackend:
             if self._cancelled:
                 return AIBackendResult(session_id=session_id, cancelled=True)
 
-            text = "".join(parts.values())
             if timed_out:
-                logger.warning(
-                    "OpenCode prompt idle timeout",
+                await self._abort()
+                logger.error(
+                    "OpenCode prompt timed out without a terminal event",
                     extra={
                         "event": "opencode_prompt_timeout",
                         "session_id": session_id,
                         "timeout_s": effective_timeout,
+                        "text_length": len(turn.text),
+                        "reasoning_length": len(turn.reasoning),
                     },
                 )
-                await self._abort()
-                return AIBackendResult(
-                    stdout=text,
-                    stderr=f"Timeout: el prompt estuvo {effective_timeout}s sin actividad.",
-                    returncode=-1,
-                    timed_out=True,
-                    session_id=session_id,
+                raise OpenCodeStreamError(
+                    f"El turno de OpenCode no terminó en {effective_timeout:g}s "
+                    "(sin session.idle ni mensaje final).",
+                    directory=directory,
                 )
 
+            logger.info(
+                "OpenCode stream completed",
+                extra={
+                    "event": "opencode_stream_completed",
+                    "session_id": session_id,
+                    "terminal_event": terminal_event,
+                    "text_length": len(turn.text),
+                    "reasoning_length": len(turn.reasoning),
+                },
+            )
+
+            text = turn.text
             if not text:
                 text = await self._fallback_text(session_id, directory)
 
@@ -515,59 +599,148 @@ class OpenCodeServerBackend:
         event: dict[str, Any],
         *,
         session_id: str,
-        parts: dict[str, str],
+        turn: _TurnState,
         handled_permissions: set[str],
         pending_permissions: set[asyncio.Task[None]],
-    ) -> bool:
-        """Apply one SSE event. Returns True when the turn is idle (finished)."""
+    ) -> str | None:
+        """Apply one SSE event. Returns a terminal reason when the turn ends."""
         event_type = event.get("type")
         properties = event.get("properties")
         props = cast(dict[str, Any], properties) if isinstance(properties, dict) else {}
 
         if not _belongs_to_session(props, session_id):
-            return False
+            return None
+
+        if event_type == "message.updated":
+            return self._process_message_updated(props, turn)
 
         if event_type == "message.part.delta":
-            field = props.get("field")
-            if isinstance(field, str) and field != "text":
-                return False
-            delta = props.get("delta")
-            if isinstance(delta, str) and delta:
-                part_id = _optional_str(props.get("partID")) or _optional_str(props.get("partId"))
-                key = part_id or "text"
-                parts[key] = parts.get(key, "") + delta
-                if self._progress is not None:
-                    await self._progress.emit("".join(parts.values()))
-            return False
+            await self._process_delta(props, turn)
+            return None
 
         if event_type == "message.part.updated":
-            part = props.get("part")
-            if not isinstance(part, dict):
-                return False
-            part_data = cast(dict[str, Any], part)
-            part_session = part_data.get("sessionID")
-            if isinstance(part_session, str) and part_session and part_session != session_id:
-                return False
-            if part_data.get("type") != "text":
-                return False
-            text = part_data.get("text")
-            if not isinstance(text, str):
-                return False
-            key = _optional_str(part_data.get("id")) or "text"
-            parts[key] = text
-            if self._progress is not None:
-                await self._progress.emit("".join(parts.values()))
-            return False
+            await self._process_part_updated(props, session_id, turn)
+            return None
 
         if event_type == "permission.asked":
             request = _parse_permission_event(props, session_id)
             if not request.id or request.id in handled_permissions:
-                return False
+                return None
             handled_permissions.add(request.id)
             await self._dispatch_permission(request, pending_permissions)
-            return False
+            return None
 
-        return event_type == "session.idle"
+        if event_type == "session.status":
+            status = props.get("status")
+            if isinstance(status, dict):
+                status_type = status.get("type")
+                if status_type == "idle":
+                    return "session.status.idle"
+                if status_type == "error":
+                    raise OpenCodeStreamError(
+                        f"OpenCode reportó un error en la sesión ({_error_message(status)}).",
+                        directory=self._active_directory,
+                    )
+            return None
+
+        if event_type == "session.error":
+            raise OpenCodeStreamError(
+                f"OpenCode reportó un error en la sesión ({_error_message(props)}).",
+                directory=self._active_directory,
+            )
+
+        if event_type == "session.idle":
+            return "session.idle"
+        return None
+
+    def _process_message_updated(self, props: dict[str, Any], turn: _TurnState) -> str | None:
+        """Track message roles and use a completed final message as terminal.
+
+        ``session.idle`` was missing in the reported freeze (a ``task`` tool
+        subagent never started, so the parent stayed ``busy`` forever). A
+        completed assistant message whose ``finish`` reason is final is a
+        deterministic equivalent: OpenCode only emits it when the step has no
+        more tool calls to run.
+        """
+        info = props.get("info")
+        if not isinstance(info, dict):
+            return None
+        info_data = cast(dict[str, Any], info)
+        message_id = _optional_str(info_data.get("id"))
+        role = _optional_str(info_data.get("role"))
+        if message_id and role:
+            turn.message_roles[message_id] = role
+
+        if info_data.get("error") is not None and info_data.get("error") != {}:
+            raise OpenCodeStreamError(
+                f"OpenCode reportó un error en el mensaje ({_error_message(info_data)}).",
+                directory=self._active_directory,
+            )
+
+        if role != "assistant" or not _is_final_assistant_message(info_data):
+            return None
+        return "message.updated.completed"
+
+    async def _process_delta(self, props: dict[str, Any], turn: _TurnState) -> None:
+        """Append a text/reasoning delta; never mix them in the final text."""
+        field = props.get("field")
+        if isinstance(field, str) and field != "text":
+            return
+        delta = props.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        part_id = _optional_str(props.get("partID")) or _optional_str(props.get("partId"))
+        if not part_id:
+            return
+        part_type = turn.part_types.get(part_id)
+        if part_type == "reasoning":
+            turn.append_reasoning(part_id, delta)
+        elif part_type in (None, "text") and not turn.is_user_part(part_id):
+            # ``None`` keeps compatibility with streams that omit the prior
+            # ``message.part.updated``; a known user part is always excluded.
+            turn.append_text(part_id, delta)
+        else:
+            return
+        await self._emit_progress(turn)
+
+    async def _process_part_updated(
+        self,
+        props: dict[str, Any],
+        session_id: str,
+        turn: _TurnState,
+    ) -> None:
+        part = props.get("part")
+        if not isinstance(part, dict):
+            return
+        part_data = cast(dict[str, Any], part)
+        part_session = part_data.get("sessionID")
+        if isinstance(part_session, str) and part_session and part_session != session_id:
+            return
+        part_id = _optional_str(part_data.get("id"))
+        part_type = _optional_str(part_data.get("type"))
+        if not part_id or not part_type:
+            return
+        turn.set_part_type(part_id, part_type)
+        message_id = _optional_str(part_data.get("messageID"))
+        if message_id:
+            turn.set_part_message(part_id, message_id)
+
+        text = part_data.get("text")
+        if not isinstance(text, str):
+            return
+        if part_type == "text":
+            if turn.is_user_part(part_id):
+                return
+            turn.set_text(part_id, text)
+        elif part_type == "reasoning":
+            turn.set_reasoning(part_id, text)
+        else:
+            return
+        await self._emit_progress(turn)
+
+    async def _emit_progress(self, turn: _TurnState) -> None:
+        if self._progress is not None:
+            await self._progress.emit(turn.progress)
 
     async def _dispatch_permission(
         self,
@@ -779,6 +952,35 @@ def _parse_permission_event(props: dict[str, Any], session_id: str) -> Permissio
         message_id=_optional_str(tool_data.get("messageID")),
         call_id=_optional_str(tool_data.get("callID")),
     )
+
+
+def _is_final_assistant_message(info: dict[str, Any]) -> bool:
+    """True when an assistant message is completed AND the turn is over."""
+    if info.get("role") != "assistant":
+        return False
+    time_data = info.get("time")
+    if not isinstance(time_data, dict) or time_data.get("completed") is None:
+        return False
+    finish = info.get("finish")
+    return isinstance(finish, str) and finish in _FINAL_FINISHES
+
+
+def _error_message(payload: dict[str, Any]) -> str:
+    """Best-effort human-readable message from ``session.error``/``info.error``."""
+    error = payload.get("error", payload)
+    if isinstance(error, dict):
+        data = error.get("data")
+        if isinstance(data, dict):
+            data_message = data.get("message")
+            if isinstance(data_message, str) and data_message:
+                return data_message
+        for key in ("message", "name", "type"):
+            value = error.get(key)
+            if isinstance(value, str) and value:
+                return value
+    if isinstance(error, str) and error:
+        return error
+    return "error desconocido"
 
 
 def _assistant_text(messages: list[dict[str, Any]]) -> str:

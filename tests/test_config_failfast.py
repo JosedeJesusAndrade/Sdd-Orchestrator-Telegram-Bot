@@ -42,6 +42,7 @@ def _import_config_with(raw: str) -> subprocess.CompletedProcess[str]:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

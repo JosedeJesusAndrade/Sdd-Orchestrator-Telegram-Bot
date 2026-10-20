@@ -35,7 +35,16 @@ def test_parse_non_numeric_raises_value_error() -> None:
 
 
 def _import_config_with(raw: str) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "ALLOWED_CHAT_IDS": raw}
+    env = {
+        **os.environ,
+        "ALLOWED_CHAT_IDS": raw,
+        # Force the child to write UTF-8 regardless of the console code page
+        # (cp1252 in some Windows shells). Without this, the accent in
+        # "inválido" was encoded as cp1252 (0xE1) and the strict UTF-8 decode
+        # below raised UnicodeDecodeError.
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
     return subprocess.run(
         [sys.executable, "-c", "import config"],
         cwd=PROJECT_ROOT,
@@ -43,6 +52,7 @@ def _import_config_with(raw: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
 
 

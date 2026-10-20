@@ -194,8 +194,19 @@ class FletPermissionPresenter:
 
     async def show(self, request: PermissionRequest) -> None:
         """Show the request, or queue it behind the visible dialog."""
+        queued = self._current is not None
         self._queue.append(request)
-        if self._current is not None:
+        logger.info(
+            "Permission presenter show",
+            extra={
+                "event": "permission_presenter_show",
+                "presenter": "flet",
+                "request_id": request.id,
+                "queued": queued,
+                "pending": self.pending_count,
+            },
+        )
+        if queued:
             logger.debug(
                 "Permission dialog queued",
                 extra={
@@ -217,6 +228,16 @@ class FletPermissionPresenter:
             if dialog is not None:
                 self._pop_dialog()
             self._append_notice(decision)
+            logger.info(
+                "Permission presenter resolve",
+                extra={
+                    "event": "permission_presenter_resolve",
+                    "presenter": "flet",
+                    "request_id": request_id,
+                    "reply": decision.reply,
+                    "was_queued": False,
+                },
+            )
             self._show_next()
             return
 
@@ -231,6 +252,16 @@ class FletPermissionPresenter:
                 },
             )
             self._append_notice(decision)
+            logger.info(
+                "Permission presenter resolve",
+                extra={
+                    "event": "permission_presenter_resolve",
+                    "presenter": "flet",
+                    "request_id": request_id,
+                    "reply": decision.reply,
+                    "was_queued": True,
+                },
+            )
             return
 
         logger.debug(

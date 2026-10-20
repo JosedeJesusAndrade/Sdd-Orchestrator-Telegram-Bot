@@ -133,6 +133,89 @@ async def test_ui_resolution_notifies_presenters() -> None:
     assert await task == decision
 
 
+# ── Observability ─────────────────────────────────────────────────────────
+
+
+async def test_request_permission_logs_the_asked_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    with caplog.at_level(logging.INFO):
+        task = asyncio.create_task(router.request_permission(request))
+        await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+        assert await router.resolve_from_ui(request.id, PermissionDecision(reply="once")) is True
+        await task
+
+    asked = [
+        record for record in caplog.records if getattr(record, "event", "") == "permission_asked"
+    ]
+    assert len(asked) == 1
+    record = asked[0]
+    assert getattr(record, "request_id", None) == request.id
+    assert getattr(record, "session_id", None) == request.session_id
+    assert getattr(record, "action", None) == "bash"
+    assert getattr(record, "patterns", None) == "git commit *"
+    assert getattr(record, "command", None) == "git commit -m x"
+    assert getattr(record, "presenters", None) == 1
+
+
+async def test_permission_asked_redacts_obvious_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = PermissionRequest(
+        id="per_secret",
+        session_id=SID,
+        permission="bash",
+        patterns=("mysql *",),
+        metadata={"command": "mysql --password=supersecret -u root", "agent": "build"},
+        always=(),
+        message_id=None,
+        call_id=None,
+    )
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    with caplog.at_level(logging.INFO):
+        task = asyncio.create_task(router.request_permission(request))
+        await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+        await router.resolve_from_ui(request.id, PermissionDecision(reply="reject"))
+        await task
+
+    record = next(
+        item for item in caplog.records if getattr(item, "event", "") == "permission_asked"
+    )
+    assert getattr(record, "command", None) == "mysql --password=*** -u root"
+    assert getattr(record, "agent", None) == "build"
+    assert "supersecret" not in str(getattr(record, "command", ""))
+
+
+async def test_resolve_from_ui_logs_the_resolved_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=1.0)
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+    with caplog.at_level(logging.INFO):
+        assert await router.resolve_from_ui(request.id, PermissionDecision(reply="always")) is True
+        await task
+
+    resolved = [
+        record for record in caplog.records if getattr(record, "event", "") == "permission_resolved"
+    ]
+    assert len(resolved) == 1
+    assert getattr(resolved[0], "request_id", None) == request.id
+    assert getattr(resolved[0], "reply", None) == "always"
+    assert getattr(resolved[0], "timed_out", None) is False
+    assert getattr(resolved[0], "via", None) == "ui"
+
+
 # ── Timeout ───────────────────────────────────────────────────────────────
 
 
@@ -143,7 +226,7 @@ async def test_timeout_rejects_and_notifies_presenters(
     presenter = RecordingPresenter()
     router = PermissionRouter(presenters=[presenter], timeout=0.01)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         decision = await asyncio.wait_for(router.request_permission(request), timeout=1.0)
 
     assert decision == PermissionDecision(
@@ -155,6 +238,21 @@ async def test_timeout_rejects_and_notifies_presenters(
     assert router.pending_count == 0
     assert any(getattr(record, "event", "") == "permission_timeout" for record in caplog.records)
 
+    timeout_records = [
+        record for record in caplog.records if getattr(record, "event", "") == "permission_timeout"
+    ]
+    assert len(timeout_records) == 1
+    assert getattr(timeout_records[0], "request_id", None) == request.id
+
+    resolved = [
+        record for record in caplog.records if getattr(record, "event", "") == "permission_resolved"
+    ]
+    assert len(resolved) == 1
+    assert getattr(resolved[0], "request_id", None) == request.id
+    assert getattr(resolved[0], "reply", None) == "reject"
+    assert getattr(resolved[0], "timed_out", None) is True
+    assert getattr(resolved[0], "via", None) == "timeout"
+
 
 # ── Fail closed / isolation ───────────────────────────────────────────────
 
@@ -164,7 +262,7 @@ async def test_no_presenters_fails_closed_immediately(
 ) -> None:
     router = PermissionRouter(presenters=[], timeout=10.0)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         decision = await asyncio.wait_for(router.request_permission(_request()), timeout=1.0)
 
     assert decision.reply == "reject"
@@ -174,6 +272,14 @@ async def test_no_presenters_fails_closed_immediately(
     assert any(
         getattr(record, "event", "") == "permission_no_presenter" for record in caplog.records
     )
+
+    resolved = [
+        record for record in caplog.records if getattr(record, "event", "") == "permission_resolved"
+    ]
+    assert len(resolved) == 1
+    assert getattr(resolved[0], "reply", None) == "reject"
+    assert getattr(resolved[0], "timed_out", None) is False
+    assert getattr(resolved[0], "via", None) == "no_presenter"
 
 
 async def test_a_broken_presenter_does_not_block_the_others(

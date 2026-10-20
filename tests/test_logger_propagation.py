@@ -32,3 +32,21 @@ def test_module_logger_propagates_to_opencode_bot() -> None:
         assert records[0].msg == "hello"
     finally:
         probe.removeHandler(probe_handler)
+
+
+def test_request_id_filter_preserves_an_explicit_extra() -> None:
+    from utils.logging import RequestIdFilter
+
+    record = logging.LogRecord(
+        name="opencode_bot.services.permission_router",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=0,
+        msg="x",
+        args=(),
+        exc_info=None,
+    )
+    record.__dict__["request_id"] = "per_1"
+
+    assert RequestIdFilter().filter(record) is True
+    assert getattr(record, "request_id", None) == "per_1"

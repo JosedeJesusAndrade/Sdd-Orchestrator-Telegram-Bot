@@ -119,7 +119,11 @@ class RequestIdFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = request_id_var.get()
+        # An explicit ``request_id`` extra (e.g. a permission request id) must
+        # win over the ambient context: without this guard the ambient value
+        # silently overwrote the structured field on its way to the file.
+        if not hasattr(record, "request_id"):
+            record.request_id = request_id_var.get()
         return True
 
 

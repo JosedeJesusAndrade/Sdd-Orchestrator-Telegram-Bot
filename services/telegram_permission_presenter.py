@@ -143,11 +143,31 @@ class TelegramPermissionPresenter:
                     "chats": len(sent),
                 },
             )
+        logger.info(
+            "Permission presenter show",
+            extra={
+                "event": "permission_presenter_show",
+                "presenter": "telegram",
+                "request_id": request.id,
+                "chats": len(sent),
+                "configured_chats": len(self._chat_ids),
+            },
+        )
 
     async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
         """Append the outcome and remove the keyboard from every message."""
         sent = self._sent.pop(request_id, None)
         if not sent:
+            logger.info(
+                "Permission presenter resolve",
+                extra={
+                    "event": "permission_presenter_resolve",
+                    "presenter": "telegram",
+                    "request_id": request_id,
+                    "reply": decision.reply,
+                    "sent_messages": 0,
+                },
+            )
             return
 
         outcome = result_text(decision)
@@ -172,3 +192,14 @@ class TelegramPermissionPresenter:
                     chat_id=chat_id,
                     error_type=type(e).__name__,
                 )
+
+        logger.info(
+            "Permission presenter resolve",
+            extra={
+                "event": "permission_presenter_resolve",
+                "presenter": "telegram",
+                "request_id": request_id,
+                "reply": decision.reply,
+                "sent_messages": len(sent),
+            },
+        )

@@ -7,6 +7,7 @@ following the harness style of ``tests/test_flet_render.py``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -178,6 +179,67 @@ async def test_show_calls_page_show_dialog() -> None:
     assert len(page.dialogs) == 1
     assert "git commit *" in _texts(page.dialogs[0])
     assert presenter.pending_count == 1
+
+
+async def test_show_and_resolve_log_presenter_events(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    presenter, _, _, _ = _presenter()
+    request = _request()
+
+    with caplog.at_level(logging.INFO, logger="opencode_bot.flet_app.flet_permission_presenter"):
+        await presenter.show(request)
+        await presenter.resolve(request.id, PermissionDecision(reply="once"))
+
+    shown = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_presenter_show"
+    ]
+    resolved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_presenter_resolve"
+    ]
+    assert len(shown) == 1
+    assert getattr(shown[0], "presenter", None) == "flet"
+    assert getattr(shown[0], "request_id", None) == request.id
+    assert getattr(shown[0], "queued", None) is False
+    assert getattr(shown[0], "pending", None) == 1
+    assert len(resolved) == 1
+    assert getattr(resolved[0], "presenter", None) == "flet"
+    assert getattr(resolved[0], "request_id", None) == request.id
+    assert getattr(resolved[0], "reply", None) == "once"
+    assert getattr(resolved[0], "was_queued", None) is False
+
+
+async def test_queued_request_logs_that_it_was_queued(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    presenter, _, _, _ = _presenter()
+
+    with caplog.at_level(logging.INFO, logger="opencode_bot.flet_app.flet_permission_presenter"):
+        await presenter.show(_request("per_1"))
+        await presenter.show(_request("per_2"))
+        await presenter.resolve("per_2", PermissionDecision(reply="reject"))
+
+    shown = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_presenter_show"
+    ]
+    resolved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_presenter_resolve"
+    ]
+    assert [(item.__dict__["request_id"], item.__dict__["queued"]) for item in shown] == [
+        ("per_1", False),
+        ("per_2", True),
+    ]
+    assert len(resolved) == 1
+    assert getattr(resolved[0], "request_id", None) == "per_2"
+    assert getattr(resolved[0], "was_queued", None) is True
 
 
 async def test_queue_shows_one_dialog_at_a_time() -> None:

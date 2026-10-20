@@ -197,6 +197,30 @@ async def test_show_continues_when_one_chat_fails(caplog: pytest.LogCaptureFixtu
     )
 
 
+async def test_show_logs_the_presenter_show_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = _RecordingBot()
+    presenter = _presenter(bot)
+    request = _request()
+
+    with caplog.at_level(
+        logging.INFO, logger="opencode_bot.services.telegram_permission_presenter"
+    ):
+        await presenter.show(request)
+
+    shown = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_presenter_show"
+    ]
+    assert len(shown) == 1
+    assert getattr(shown[0], "presenter", None) == "telegram"
+    assert getattr(shown[0], "request_id", None) == request.id
+    assert getattr(shown[0], "chats", None) == 1
+    assert getattr(shown[0], "configured_chats", None) == 1
+
+
 # ── resolve() ─────────────────────────────────────────────────────────────
 
 
@@ -255,3 +279,28 @@ async def test_edit_failure_is_swallowed_and_logged(caplog: pytest.LogCaptureFix
     assert any(
         getattr(record, "event", "") == "permission_prompt_edit_failed" for record in caplog.records
     )
+
+
+async def test_resolve_logs_the_presenter_resolve_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = _RecordingBot()
+    presenter = _presenter(bot)
+    request = _request()
+
+    await presenter.show(request)
+    with caplog.at_level(
+        logging.INFO, logger="opencode_bot.services.telegram_permission_presenter"
+    ):
+        await presenter.resolve(request.id, PermissionDecision(reply="once"))
+
+    resolved = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_presenter_resolve"
+    ]
+    assert len(resolved) == 1
+    assert getattr(resolved[0], "presenter", None) == "telegram"
+    assert getattr(resolved[0], "request_id", None) == request.id
+    assert getattr(resolved[0], "reply", None) == "once"
+    assert getattr(resolved[0], "sent_messages", None) == 1

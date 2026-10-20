@@ -23,7 +23,9 @@ The router only *decides*. The backend sends the decision to the server via
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from services.permissions import (
     PermissionDecision,
@@ -38,6 +40,33 @@ DEFAULT_TIMEOUT = 300.0
 TIMEOUT_MESSAGE = "El permiso expiró y fue rechazado automáticamente."
 NO_PRESENTER_MESSAGE = "No hay una interfaz disponible para aprobar el permiso."
 DUPLICATE_MESSAGE = "Solicitud de permiso duplicada."
+
+#: Keep a single log line readable: commands/patterns can be arbitrarily long.
+_FIELD_LIMIT = 300
+
+#: Never write credentials to the log even when they appear in a tool command.
+_SECRET_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|authorization)\b"
+    r"(\s*[=:]\s*)((?:bearer|basic|token)\s+)?(\S+)"
+)
+
+
+def _one_line(value: str) -> str:
+    """Collapse newlines so a single event stays a single physical log line."""
+    return " ".join(value.splitlines())[:_FIELD_LIMIT]
+
+
+def _compact_patterns(patterns: Sequence[str]) -> str | None:
+    if not patterns:
+        return None
+    return _one_line(", ".join(patterns))
+
+
+def _safe_command(metadata: Mapping[str, Any]) -> str | None:
+    command = metadata.get("command")
+    if not isinstance(command, str) or not command:
+        return None
+    return _one_line(_SECRET_RE.sub(r"\1\2\3***", command))
 
 
 class PermissionRouter:
@@ -63,6 +92,24 @@ class PermissionRouter:
 
     async def request_permission(self, request: PermissionRequest) -> PermissionDecision:
         """Ask every presenter and wait for the first answer or the timeout."""
+        asked: dict[str, object] = {
+            "event": "permission_asked",
+            "request_id": request.id,
+            "session_id": request.session_id,
+            "action": request.permission,
+            "presenters": len(self._presenters),
+        }
+        patterns = _compact_patterns(request.patterns)
+        if patterns is not None:
+            asked["patterns"] = patterns
+        command = _safe_command(request.metadata)
+        if command is not None:
+            asked["command"] = command
+        agent = request.metadata.get("agent")
+        if isinstance(agent, str) and agent:
+            asked["agent"] = agent
+        logger.info("Permission asked", extra=asked)
+
         if not self._presenters:
             logger.warning(
                 "Permission request rejected: no presenter registered",
@@ -70,6 +117,17 @@ class PermissionRouter:
                     "event": "permission_no_presenter",
                     "request_id": request.id,
                     "session_id": request.session_id,
+                },
+            )
+            logger.info(
+                "Permission resolved",
+                extra={
+                    "event": "permission_resolved",
+                    "request_id": request.id,
+                    "session_id": request.session_id,
+                    "reply": "reject",
+                    "timed_out": False,
+                    "via": "no_presenter",
                 },
             )
             return PermissionDecision(reply="reject", message=NO_PRESENTER_MESSAGE)
@@ -108,6 +166,17 @@ class PermissionRouter:
                     "timeout": self._timeout,
                 },
             )
+            logger.info(
+                "Permission resolved",
+                extra={
+                    "event": "permission_resolved",
+                    "request_id": request.id,
+                    "session_id": request.session_id,
+                    "reply": "reject",
+                    "timed_out": True,
+                    "via": "timeout",
+                },
+            )
             await self._resolve_all(request.id, decision)
             return decision
         finally:
@@ -130,6 +199,16 @@ class PermissionRouter:
             return False
         future.set_result(decision)
         self._pending.pop(request_id, None)
+        logger.info(
+            "Permission resolved from UI",
+            extra={
+                "event": "permission_resolved",
+                "request_id": request_id,
+                "reply": decision.reply,
+                "timed_out": decision.timed_out,
+                "via": "ui",
+            },
+        )
         await self._resolve_all(request_id, decision)
         return True
 

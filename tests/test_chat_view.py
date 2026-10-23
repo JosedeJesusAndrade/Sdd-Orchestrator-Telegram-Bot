@@ -58,7 +58,7 @@ class FakeBackend:
         self._result = result
         self._gate = gate
         self.source_label: str | None = None
-        self.timeout: int | None = None
+        self.timeout: float | None = None
 
     async def execute(
         self,
@@ -68,7 +68,7 @@ class FakeBackend:
         agent: str | None = None,
         workdir: str | None = None,
         source_label: str = "",
-        timeout: int | None = None,
+        timeout: float | None = None,
     ) -> AIBackendResult:
         self.source_label = source_label
         self.timeout = timeout
@@ -438,7 +438,7 @@ class _RecordingBackend:
         agent: str | None = None,
         workdir: str | None = None,
         source_label: str = "",
-        timeout: int | None = None,
+        timeout: float | None = None,
     ) -> AIBackendResult:
         self.started.set()
         await self.release.wait()

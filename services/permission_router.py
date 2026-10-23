@@ -20,6 +20,9 @@ Flet, or both. The router owns that rendezvous:
      notifies the presenters with ``cancelled=True`` and re-raises so every UI
      closes its dialog. When the cancellation carries the backend's budget
      expiry reason, the notice is ``timed_out=True`` instead ("expired").
+     When it carries the turn-ended reason (a terminal event arrived while the
+     dialog was open), the notice is ``turn_ended=True``: the dialog closes,
+     but it is neither an expiry nor an interruption.
   6. The pending entry is always removed in ``finally`` (no leaked futures).
 
 The router only *decides*. The backend sends the decision to the server via
@@ -35,6 +38,7 @@ from typing import Any
 
 from services.permissions import (
     PERMISSION_BUDGET_EXPIRED_REASON,
+    PERMISSION_TURN_ENDED_REASON,
     PermissionDecision,
     PermissionPresenter,
     PermissionRequest,
@@ -48,6 +52,7 @@ TIMEOUT_MESSAGE = "El permiso expiró y fue rechazado automáticamente."
 NO_PRESENTER_MESSAGE = "No hay una interfaz disponible para aprobar el permiso."
 DUPLICATE_MESSAGE = "Solicitud de permiso duplicada."
 CANCELLED_MESSAGE = "El turno se interrumpió antes de resolver el permiso."
+TURN_ENDED_MESSAGE = "El turno terminó antes de que respondieras el permiso."
 
 #: Keep a single log line readable: commands/patterns can be arbitrarily long.
 _FIELD_LIMIT = 300
@@ -166,20 +171,38 @@ class PermissionRouter:
         except asyncio.CancelledError as exc:
             # The backend's own budget expiring is still a cancellation, but
             # the human actually timed out: carry both flags so the UIs show
-            # "expired" instead of "turn interrupted".
-            expired = PERMISSION_BUDGET_EXPIRED_REASON in (exc.args or ())
+            # "expired" instead of "turn interrupted". A terminal event that
+            # arrives while the dialog is open is a third case: the turn ended
+            # before the human answered, so the notice is its own.
+            reasons = exc.args or ()
+            expired = PERMISSION_BUDGET_EXPIRED_REASON in reasons
+            turn_ended = PERMISSION_TURN_ENDED_REASON in reasons
+            if expired:
+                message = TIMEOUT_MESSAGE
+                event = "permission_budget_expired"
+                via = "budget_expired"
+                warning = "Permission budget expired; rejecting"
+            elif turn_ended:
+                message = TURN_ENDED_MESSAGE
+                event = "permission_turn_ended"
+                via = "turn_ended"
+                warning = "Permission request cancelled: the turn already ended"
+            else:
+                message = CANCELLED_MESSAGE
+                event = "permission_cancelled"
+                via = "cancel"
+                warning = "Permission request cancelled; rejecting"
             decision = PermissionDecision(
                 reply="reject",
-                message=TIMEOUT_MESSAGE if expired else CANCELLED_MESSAGE,
+                message=message,
                 timed_out=expired,
                 cancelled=True,
+                turn_ended=turn_ended,
             )
             logger.warning(
-                "Permission budget expired; rejecting"
-                if expired
-                else "Permission request cancelled; rejecting",
+                warning,
                 extra={
-                    "event": ("permission_budget_expired" if expired else "permission_cancelled"),
+                    "event": event,
                     "request_id": request.id,
                     "session_id": request.session_id,
                 },
@@ -193,7 +216,8 @@ class PermissionRouter:
                     "reply": "reject",
                     "timed_out": expired,
                     "cancelled": True,
-                    "via": "budget_expired" if expired else "cancel",
+                    "turn_ended": turn_ended,
+                    "via": via,
                 },
             )
             # Tell every UI to close the dialog before propagating the

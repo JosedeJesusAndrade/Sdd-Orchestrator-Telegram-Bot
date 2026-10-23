@@ -20,6 +20,7 @@ from services.telegram_permission_presenter import (
     RESULT_PERMITTED_ALWAYS,
     RESULT_REJECTED,
     RESULT_TIMED_OUT,
+    RESULT_TURN_ENDED,
     TelegramPermissionPresenter,
     build_keyboard,
     format_permission_request,
@@ -238,6 +239,10 @@ async def test_show_logs_the_presenter_show_event(
         (
             PermissionDecision(reply="reject", message="cancelled", cancelled=True),
             RESULT_CANCELLED,
+        ),
+        (
+            PermissionDecision(reply="reject", cancelled=True, turn_ended=True),
+            RESULT_TURN_ENDED,
         ),
         (
             PermissionDecision(reply="reject", message="expired", timed_out=True, cancelled=True),

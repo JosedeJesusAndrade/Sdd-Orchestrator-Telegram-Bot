@@ -46,6 +46,7 @@ RESULT_PERMITTED_ALWAYS = "✅ Permitido (siempre)"
 RESULT_REJECTED = "❌ Rechazado"
 RESULT_TIMED_OUT = "⏱️ Permiso rechazado automáticamente (timeout)"
 RESULT_CANCELLED = "⏹️ Permiso cancelado (turno interrumpido)"
+RESULT_TURN_ENDED = "⏹️ Permiso cerrado: el turno terminó antes de que respondieras"
 
 #: ``(chat_id, message_id, text)`` — the text is kept so ``resolve`` can append
 #: the outcome without re-rendering the request (the metadata may be gone).
@@ -77,8 +78,11 @@ def result_text(decision: PermissionDecision) -> str:
 
     ``timed_out`` wins over ``cancelled``: the backend's own budget expiring
     cancels the task but the human timed out, so "expired" is the honest
-    message. A real interruption (turn cancelled) carries only ``cancelled``.
+    message. A real interruption (turn cancelled) carries only ``cancelled``;
+    a dialog the terminal event closed carries ``turn_ended``.
     """
+    if decision.turn_ended:
+        return RESULT_TURN_ENDED
     if decision.timed_out:
         return RESULT_TIMED_OUT
     if decision.cancelled:

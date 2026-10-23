@@ -50,6 +50,7 @@ from services.opencode_server.errors import (
 from services.opencode_server.manager import OpenCodeServerManager
 from services.permissions import (
     PERMISSION_BUDGET_EXPIRED_REASON,
+    PERMISSION_TURN_ENDED_REASON,
     PermissionDecision,
     PermissionRequest,
 )
@@ -586,11 +587,16 @@ class OpenCodeServerBackend:
                     terminal_event = terminal
                     break
 
-            # Give an in-flight reply a chance to leave before we return.
+            # Give an in-flight reply a chance to leave before we return. Any
+            # end that is not a cancellation/timeout means the turn is over:
+            # dialogs left open are SETTLED (cancelled with a clear reason),
+            # never awaited — gathering an unresolved handler would hang the
+            # turn forever (N4).
             await self._finish_permissions(
                 pending_permissions,
                 cancelled=self._cancelled or timed_out,
                 expired=permission_expired,
+                turn_ended=not (self._cancelled or timed_out),
             )
 
             if self._cancelled:
@@ -598,7 +604,12 @@ class OpenCodeServerBackend:
 
             if timed_out:
                 await self._abort()
-                timeout_s = self._permission_timeout if permission_expired else effective_timeout
+                if permission_expired:
+                    # N2: report what the budget really waited for, including
+                    # the grace period, not just the configured timeout.
+                    timeout_s = self._permission_timeout + PERMISSION_GRACE
+                else:
+                    timeout_s = effective_timeout
                 logger.error(
                     "OpenCode permission budget expired without a decision"
                     if permission_expired
@@ -935,17 +946,23 @@ class OpenCodeServerBackend:
         *,
         cancelled: bool,
         expired: bool = False,
+        turn_ended: bool = False,
     ) -> None:
         """Settle in-flight permission tasks before the turn returns.
 
         ``expired`` tags the cancellation so the router reports "the human
-        timed out" instead of "the turn was interrupted" (both are
-        cancellations; only the notice differs).
+        timed out" instead of "the turn was interrupted". ``turn_ended``
+        cancels dialogs still open when the turn reached a terminal event:
+        awaiting an answer that will never come would hang the turn forever.
         """
         if not pending:
             return
-        if cancelled:
-            reason = PERMISSION_BUDGET_EXPIRED_REASON if expired else None
+        if cancelled or turn_ended:
+            reason: str | None = None
+            if expired:
+                reason = PERMISSION_BUDGET_EXPIRED_REASON
+            elif turn_ended:
+                reason = PERMISSION_TURN_ENDED_REASON
             for task in pending:
                 task.cancel(reason)
         await asyncio.gather(*pending, return_exceptions=True)

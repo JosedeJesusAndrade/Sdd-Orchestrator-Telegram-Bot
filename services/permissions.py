@@ -20,6 +20,13 @@ Reply = Literal["once", "always", "reject"]
 #: router's shorter timeout normally settles the request first).
 PERMISSION_BUDGET_EXPIRED_REASON = "permission_budget_expired"
 
+#: Cancellation message the backend attaches to ``Task.cancel()`` when the
+#: assistant turn reaches a terminal event while the request is still pending.
+#: The router maps it to ``turn_ended=True`` so UIs close the dialog with
+#: "the turn ended before you answered", distinct from an expired budget or an
+#: explicit interruption.
+PERMISSION_TURN_ENDED_REASON = "permission_turn_ended"
+
 
 @dataclass(frozen=True)
 class PermissionRequest:
@@ -45,12 +52,17 @@ class PermissionDecision:
     instead of leaving the buttons/dialog dangling. Both flags are set when the
     backend's own budget expires (cancelled by us, but the human timed out):
     presenters must render that as "expired", not as an interrupted turn.
+
+    ``turn_ended`` is the third case: the assistant turn reached a terminal
+    event before the human answered. It is also a cancellation (the dialog must
+    close), but the notice is its own: not "expired" and not "interrupted".
     """
 
     reply: Reply
     message: str | None = None
     timed_out: bool = False
     cancelled: bool = False
+    turn_ended: bool = False
 
 
 class PermissionPort(Protocol):

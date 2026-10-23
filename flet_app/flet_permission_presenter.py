@@ -52,6 +52,7 @@ RESULT_PERMITTED_ALWAYS = "🔁 Permiso permitido siempre"
 RESULT_REJECTED = "❌ Permiso rechazado"
 RESULT_TIMED_OUT = "⏱️ El permiso expiró y se rechazó automáticamente"
 RESULT_CANCELLED = "⏹️ Permiso cancelado (turno interrumpido)"
+RESULT_TURN_ENDED = "⏹️ Permiso cerrado: el turno terminó antes de que respondieras"
 
 #: ``(request_id, decision) -> accepted`` — the router's ``resolve_from_ui``.
 ResolveCallback = Callable[[str, PermissionDecision], Awaitable[bool]]
@@ -63,8 +64,11 @@ def result_text(decision: PermissionDecision) -> str:
 
     ``timed_out`` wins over ``cancelled``: the backend's own budget expiring
     cancels the task but the human timed out, so "expired" is the honest
-    message. A real interruption (turn cancelled) carries only ``cancelled``.
+    message. A real interruption (turn cancelled) carries only ``cancelled``;
+    a dialog the terminal event closed carries ``turn_ended``.
     """
+    if decision.turn_ended:
+        return RESULT_TURN_ENDED
     if decision.timed_out:
         return RESULT_TIMED_OUT
     if decision.cancelled:

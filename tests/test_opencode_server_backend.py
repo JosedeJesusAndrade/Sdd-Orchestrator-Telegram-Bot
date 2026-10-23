@@ -19,11 +19,12 @@ import pytest
 
 from services.opencode_server.errors import OpenCodeStreamError, OpenCodeUnavailableError
 from services.opencode_server_backend import (
+    PERMISSION_GRACE,
     PHASE3_REJECT_MESSAGE,
     OpenCodeServerBackend,
     _PermissionBudget,
 )
-from services.permission_router import TIMEOUT_MESSAGE, PermissionRouter
+from services.permission_router import TIMEOUT_MESSAGE, TURN_ENDED_MESSAGE, PermissionRouter
 from services.permissions import PermissionDecision, PermissionRequest
 
 SID = "ses_backend_test"
@@ -685,102 +686,221 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) ->
         await asyncio.sleep(0.005)
 
 
-class _GateHandler:
-    """Permission handler whose answers are released one at a time by the test."""
-
-    def __init__(self) -> None:
-        self.requests: list[PermissionRequest] = []
-        self.gates: dict[str, asyncio.Event] = {}
-
-    async def __call__(self, request: PermissionRequest) -> PermissionDecision:
-        self.requests.append(request)
-        gate = asyncio.Event()
-        self.gates[request.id] = gate
-        await gate.wait()
-        return PermissionDecision(reply="once")
-
-    def answered(self, request_id: str) -> bool:
-        return request_id in self.gates
+async def _noop() -> None:
+    return None
 
 
 class _RecordingPresenter:
-    """Presenter double that records every resolution."""
+    """Presenter double that records every request and resolution."""
 
     def __init__(self) -> None:
+        self.shown: list[PermissionRequest] = []
         self.resolved: list[tuple[str, PermissionDecision]] = []
 
     async def show(self, request: PermissionRequest) -> None:
-        return None
+        self.shown.append(request)
 
     async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
         self.resolved.append((request_id, decision))
 
 
-async def test_two_pending_permissions_survive_the_first_resolution() -> None:
-    """CRITICAL regression: settling one dialog must not abort the turn.
+async def _settle_pending_for_cleanup(
+    router: PermissionRouter, presenter: _RecordingPresenter
+) -> None:
+    """Unblock any dialog left open so a failing test never leaks a task."""
+    for request in presenter.shown:
+        await router.resolve_from_ui(request.id, PermissionDecision(reply="reject"))
 
-    ``_wait_with_permission`` used to raise ``TimeoutError`` whenever a
-    permission settled while another was still pending, so answering the first
-    dialog cancelled the second unanswered and failed the turn with a bogus
-    "did not finish in Ns" error. ``permission_timeout=0`` (D4) makes it worse:
-    "wait forever" still aborted on the first settled permission.
+
+async def test_terminal_event_with_one_pending_permission_ends_the_turn() -> None:
+    """N4: a terminal event must end the turn, not wait for an answer forever."""
+    presenter = _RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+    client = FakeClient(streams=[[_permission("per_1"), _Hang(), _idle()]])
+    backend = _backend(
+        client,
+        permission_handler=router.request_permission,
+        timeout=5,
+        permission_timeout=0,
+    )
+
+    task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
+    try:
+        await _wait_until(lambda: router.pending_count == 1)
+        started = asyncio.get_running_loop().time()
+        client.release()
+        result = await asyncio.wait_for(task, timeout=1)
+        elapsed = asyncio.get_running_loop().time() - started
+    finally:
+        await _settle_pending_for_cleanup(router, presenter)
+        if not task.done():
+            backend.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    assert elapsed < 1.0
+    assert result.cancelled is False
+    assert client.aborted == []
+    assert router.pending_count == 0
+    assert len(presenter.resolved) == 1
+    request_id, decision = presenter.resolved[0]
+    assert request_id == "per_1"
+    assert decision.reply == "reject"
+    assert decision.message == TURN_ENDED_MESSAGE
+    assert decision.cancelled is True
+    assert decision.turn_ended is True
+    assert decision.timed_out is False
+
+
+async def test_terminal_event_with_four_pending_permissions_ends_the_turn() -> None:
+    """N4: four open dialogs must all settle when the turn terminates."""
+    presenter = _RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+    request_ids = ["per_1", "per_2", "per_3", "per_4"]
+    client = FakeClient(
+        streams=[
+            [
+                *(_permission(request_id) for request_id in request_ids),
+                _Hang(),
+                _idle(),
+            ]
+        ]
+    )
+    backend = _backend(
+        client,
+        permission_handler=router.request_permission,
+        timeout=5,
+        permission_timeout=0,
+    )
+
+    task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
+    try:
+        await _wait_until(lambda: router.pending_count == len(request_ids))
+        started = asyncio.get_running_loop().time()
+        client.release()
+        result = await asyncio.wait_for(task, timeout=1)
+        elapsed = asyncio.get_running_loop().time() - started
+    finally:
+        await _settle_pending_for_cleanup(router, presenter)
+        if not task.done():
+            backend.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    assert elapsed < 1.0
+    assert result.cancelled is False
+    assert client.aborted == []
+    assert router.pending_count == 0
+    assert {request_id for request_id, _ in presenter.resolved} == set(request_ids)
+    assert len(presenter.resolved) == len(request_ids)
+    for _, decision in presenter.resolved:
+        assert decision.reply == "reject"
+        assert decision.message == TURN_ENDED_MESSAGE
+        assert decision.cancelled is True
+        assert decision.turn_ended is True
+        assert decision.timed_out is False
+
+
+async def test_four_concurrent_permissions_are_all_resolved() -> None:
+    """The real scenario: four dialogs open at once, answered out of order.
+
+    Drives the backend's real dispatch through the real ``PermissionRouter``
+    with fake presenters. The answers arrive mixed — one alone, then two in the
+    same tick, then the last — so it also exercises the multi-settle branch.
+    Every request gets its own reply, the router ends empty, and the turn
+    completes without an abort or a hang.
     """
-    handler = _GateHandler()
-    client = FakeClient(streams=[[_permission("per_1"), _permission("per_2"), _Hang(), _idle()]])
-    backend = _backend(client, permission_handler=handler, timeout=5, permission_timeout=0)
+    presenter = _RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+    request_ids = ["per_1", "per_2", "per_3", "per_4"]
+    client = FakeClient(
+        streams=[
+            [
+                *(_permission(request_id) for request_id in request_ids),
+                _Hang(),
+                _idle(),
+            ]
+        ]
+    )
+    backend = _backend(
+        client,
+        permission_handler=router.request_permission,
+        timeout=5,
+        permission_timeout=0,
+    )
+    decisions = {
+        "per_1": PermissionDecision(reply="always"),
+        "per_2": PermissionDecision(reply="once"),
+        "per_3": PermissionDecision(reply="reject"),
+        "per_4": PermissionDecision(reply="once"),
+    }
 
     task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
     try:
-        await _wait_until(lambda: handler.answered("per_1") and handler.answered("per_2"))
+        await _wait_until(lambda: router.pending_count == len(request_ids))
 
-        handler.gates["per_1"].set()
-        await _wait_until(lambda: ("per_1", "once", None) in client.replies)
-        await asyncio.sleep(0.05)
-        assert not task.done(), "the turn must survive while per_2 is still pending"
-
-        handler.gates["per_2"].set()
+        # 1) Answer one dialog on its own.
+        assert await router.resolve_from_ui("per_2", decisions["per_2"]) is True
         await _wait_until(lambda: ("per_2", "once", None) in client.replies)
+        assert not task.done(), "the turn must survive with dialogs still pending"
+
+        # 2) Answer two dialogs in the same tick.
+        resolved = await asyncio.gather(
+            router.resolve_from_ui("per_4", decisions["per_4"]),
+            router.resolve_from_ui("per_1", decisions["per_1"]),
+        )
+        assert list(resolved) == [True, True]
+        await _wait_until(
+            lambda: (
+                ("per_1", "always", None) in client.replies
+                and ("per_4", "once", None) in client.replies
+            )
+        )
+        assert not task.done(), "the turn must survive while per_3 is still pending"
+
+        # 3) Answer the last one.
+        assert await router.resolve_from_ui("per_3", decisions["per_3"]) is True
+        await _wait_until(lambda: ("per_3", "reject", None) in client.replies)
+
         client.release()
         result = await asyncio.wait_for(task, timeout=2)
     finally:
+        await _settle_pending_for_cleanup(router, presenter)
         if not task.done():
             backend.cancel()
             with contextlib.suppress(BaseException):
                 await task
 
     assert result.cancelled is False
-    assert client.replies == [("per_1", "once", None), ("per_2", "once", None)]
     assert client.aborted == []
+    assert router.pending_count == 0
+    assert sorted(client.replies) == sorted(
+        (request_id, decision.reply, None) for request_id, decision in decisions.items()
+    )
+    assert [request.id for request in presenter.shown] == request_ids
+    assert {request_id for request_id, _ in presenter.resolved} == set(request_ids)
+    assert len(presenter.resolved) == len(request_ids)
 
 
-async def test_two_pending_permissions_survive_with_a_positive_timeout() -> None:
-    """Same multi-permission contract with the default kind of budget."""
-    handler = _GateHandler()
-    client = FakeClient(streams=[[_permission("per_1"), _permission("per_2"), _Hang(), _idle()]])
-    backend = _backend(client, permission_handler=handler, timeout=5, permission_timeout=5)
+async def test_same_tick_sse_item_is_returned_instead_of_lost() -> None:
+    """N3: an SSE item that lands the same tick a permission settles survives.
 
-    task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
-    try:
-        await _wait_until(lambda: handler.answered("per_1") and handler.answered("per_2"))
+    ``_wait_with_permission`` cancels the ``queue.get`` getter; if the item
+    already arrived, the getter completed before cancellation and its result
+    must be returned instead of ``_PERMISSION_SETTLED``.
+    """
+    backend = _backend(FakeClient())
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    item = _idle()
+    await queue.put(item)
+    settled: asyncio.Task[None] = asyncio.create_task(_noop())
+    await settled
+    pending = {settled}
 
-        handler.gates["per_1"].set()
-        await _wait_until(lambda: ("per_1", "once", None) in client.replies)
-        await asyncio.sleep(0.05)
-        assert not task.done(), "the turn must survive while per_2 is still pending"
+    result = await backend._wait_with_permission(queue, pending, timeout=1)
 
-        handler.gates["per_2"].set()
-        await _wait_until(lambda: ("per_2", "once", None) in client.replies)
-        client.release()
-        result = await asyncio.wait_for(task, timeout=2)
-    finally:
-        if not task.done():
-            backend.cancel()
-            with contextlib.suppress(BaseException):
-                await task
-
-    assert result.cancelled is False
-    assert client.replies == [("per_1", "once", None), ("per_2", "once", None)]
-    assert client.aborted == []
+    assert result is item
+    assert pending == set()
 
 
 async def test_backend_cancel_notifies_the_router_presenters() -> None:
@@ -815,7 +935,9 @@ async def test_backend_cancel_notifies_the_router_presenters() -> None:
     assert decision.timed_out is False
 
 
-async def test_backend_permission_budget_expiry_is_reported_as_expired() -> None:
+async def test_backend_permission_budget_expiry_is_reported_as_expired(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Defense-in-depth expiry must read as "expired", not "turn interrupted"."""
     presenter = _RecordingPresenter()
     # The router waits forever: only the backend's own budget can fire.
@@ -828,14 +950,29 @@ async def test_backend_permission_budget_expiry_is_reported_as_expired() -> None
         permission_timeout=0.1,
     )
 
-    with pytest.raises(OpenCodeStreamError, match="permiso"):
+    with (
+        caplog.at_level(logging.ERROR),
+        pytest.raises(OpenCodeStreamError, match="permiso") as exc_info,
+    ):
         await backend.execute(prompt="x", model="openai/gpt", session_id=None)
+
+    # N2: the report must name what the budget actually waited (timeout+grace).
+    waited = 0.1 + PERMISSION_GRACE
+    assert f"{waited:g}s" in str(exc_info.value)
+    timeout_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "opencode_prompt_timeout"
+    ]
+    assert len(timeout_records) == 1
+    assert vars(timeout_records[0]).get("timeout_s") == pytest.approx(waited)
 
     assert router.pending_count == 0
     assert len(presenter.resolved) == 1
     _, decision = presenter.resolved[0]
     assert decision.cancelled is True
     assert decision.timed_out is True
+    assert decision.turn_ended is False
 
 
 # ── Permission budget is absolute, not per-wait ────────────────────────────

@@ -17,18 +17,31 @@ import asyncio
 
 import pytest
 
-from services.opencode_server.errors import OpenCodeServerConfigError
+from services.opencode_server.errors import (
+    OpenCodeServerConfigError,
+    OpenCodeServerError,
+    OpenCodeUnavailableError,
+)
 from services.server_lifecycle import (
     SUPERVISOR_TASK_NAME,
     start_server_lifecycle,
+    start_server_or_exit,
+    stop_after_startup_failure,
     stop_server_lifecycle,
 )
 
 
 class _FakeManager:
-    def __init__(self, order: list[str], *, config_error: bool = False) -> None:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        config_error: bool = False,
+        unavailable_error: bool = False,
+    ) -> None:
         self.order = order
         self.config_error = config_error
+        self.unavailable_error = unavailable_error
         self.supervising = asyncio.Event()
         self.stop_calls = 0
 
@@ -36,6 +49,8 @@ class _FakeManager:
         self.order.append("ensure_running")
         if self.config_error:
             raise OpenCodeServerConfigError("OPENCODE_SERVER_PASSWORD is missing")
+        if self.unavailable_error:
+            raise OpenCodeUnavailableError("no se pudo iniciar opencode serve")
 
     async def run_forever(self) -> None:
         self.order.append("run_forever")
@@ -125,3 +140,100 @@ async def test_shutdown_stops_a_manager_even_without_a_supervisor() -> None:
     await stop_server_lifecycle(manager, None)
 
     assert manager.stop_calls == 1
+
+
+# ── Graceful startup failure (#1) ────────────────────────────────────────
+
+
+class _FakeApp:
+    """Mirrors the ``app.stop()`` / ``app.shutdown()`` pair ``bot.py`` runs."""
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+
+    async def stop(self) -> None:
+        self.order.append("app.stop")
+
+    async def shutdown(self) -> None:
+        self.order.append("app.shutdown")
+
+
+async def test_unavailable_server_startup_exits_non_zero_after_cleanup() -> None:
+    """The old code let ``OpenCodeUnavailableError`` escape with a traceback."""
+    order: list[str] = []
+    manager = _FakeManager(order, unavailable_error=True)
+    app = _FakeApp(order)
+    polled: list[bool] = []
+    errors: list[OpenCodeServerError] = []
+
+    async def start_polling() -> None:
+        polled.append(True)
+
+    async def shutdown() -> None:
+        await app.stop()
+        await app.shutdown()
+
+    with pytest.raises(SystemExit) as exc_info:
+        await start_server_or_exit(
+            manager,
+            start_polling=start_polling,
+            shutdown=shutdown,
+            on_error=errors.append,
+        )
+
+    assert exc_info.value.code == 1
+    assert polled == []
+    assert [type(error) for error in errors] == [OpenCodeUnavailableError]
+    assert order.index("stop") < order.index("app.stop") < order.index("app.shutdown")
+
+
+async def test_config_error_keeps_the_fail_fast_and_also_exits_cleanly() -> None:
+    order: list[str] = []
+    manager = _FakeManager(order, config_error=True)
+    app = _FakeApp(order)
+    errors: list[OpenCodeServerError] = []
+
+    async def shutdown() -> None:
+        await app.stop()
+        await app.shutdown()
+
+    with pytest.raises(SystemExit) as exc_info:
+        await start_server_or_exit(
+            manager,
+            start_polling=_noop,
+            shutdown=shutdown,
+            on_error=errors.append,
+        )
+
+    assert exc_info.value.code == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], OpenCodeServerConfigError)
+    assert order.index("stop") < order.index("app.stop")
+
+
+async def test_stop_after_startup_failure_isolates_cleanup_errors() -> None:
+    """A failed stop or shutdown must never mask the original startup error."""
+
+    class _BrokenManager(_FakeManager):
+        async def stop(self) -> None:
+            self.order.append("stop")
+            raise RuntimeError("stop boom")
+
+    manager = _BrokenManager([])
+
+    async def shutdown() -> None:
+        raise RuntimeError("shutdown boom")
+
+    # Must not raise: best-effort teardown.
+    await stop_after_startup_failure(manager, shutdown=shutdown)
+
+
+async def test_startup_cleanup_without_a_server_still_shuts_the_app_down() -> None:
+    order: list[str] = []
+
+    async def shutdown() -> None:
+        order.append("app.shutdown")
+
+    await stop_after_startup_failure(None, shutdown=shutdown)
+
+    assert order == ["app.shutdown"]

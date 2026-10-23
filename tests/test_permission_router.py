@@ -13,6 +13,7 @@ import logging
 import pytest
 
 from services.permission_router import (
+    CANCELLED_MESSAGE,
     NO_PRESENTER_MESSAGE,
     TIMEOUT_MESSAGE,
     PermissionRouter,
@@ -303,6 +304,55 @@ async def test_a_broken_presenter_does_not_block_the_others(
 
 
 # ── Concurrency ───────────────────────────────────────────────────────────
+
+
+# ── Zero timeout = wait for the human indefinitely ───────────────────────
+
+
+async def test_zero_timeout_waits_indefinitely_for_the_human() -> None:
+    """``OPENCODE_PERMISSION_TIMEOUT=0`` disables the auto-reject safety net."""
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+
+    assert not task.done(), "a zero timeout must never auto-reject"
+
+    assert await router.resolve_from_ui(request.id, PermissionDecision(reply="once")) is True
+    assert await task == PermissionDecision(reply="once")
+    assert router.pending_count == 0
+
+
+# ── Cancellation = notify every presenter ────────────────────────────────
+
+
+async def test_cancellation_notifies_presenters(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The backend can cancel the task; the UIs must still close their dialogs."""
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=10.0)
+
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(router.request_permission(request))
+        await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    expected = PermissionDecision(
+        reply="reject",
+        message=CANCELLED_MESSAGE,
+        cancelled=True,
+    )
+    assert presenter.resolved == [(request.id, expected)]
+    assert router.pending_count == 0
+    assert any(getattr(record, "event", "") == "permission_cancelled" for record in caplog.records)
 
 
 async def test_concurrent_requests_are_independent() -> None:

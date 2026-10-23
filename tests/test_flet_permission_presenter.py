@@ -18,6 +18,7 @@ from flet_app.flet_permission_presenter import (
     ALWAYS_LABEL,
     PERMIT_LABEL,
     REJECT_LABEL,
+    RESULT_CANCELLED,
     RESULT_PERMITTED,
     RESULT_PERMITTED_ALWAYS,
     RESULT_REJECTED,
@@ -287,6 +288,10 @@ async def test_buttons_deliver_the_right_decisions() -> None:
             PermissionDecision(reply="reject", message="timeout", timed_out=True),
             RESULT_TIMED_OUT,
         ),
+        (
+            PermissionDecision(reply="reject", message="cancelled", cancelled=True),
+            RESULT_CANCELLED,
+        ),
     ],
 )
 async def test_resolve_pops_and_appends_the_notice(
@@ -309,6 +314,10 @@ async def test_resolve_pops_and_appends_the_notice(
 async def test_result_text_maps_timeout_to_the_automatic_rejection() -> None:
     assert result_text(PermissionDecision(reply="reject", timed_out=True)) == RESULT_TIMED_OUT
     assert result_text(PermissionDecision(reply="reject")) == RESULT_REJECTED
+
+
+def test_result_text_maps_cancellation_to_the_interrupted_turn() -> None:
+    assert result_text(PermissionDecision(reply="reject", cancelled=True)) == RESULT_CANCELLED
 
 
 async def test_duplicate_resolve_is_a_noop() -> None:

@@ -51,6 +51,7 @@ RESULT_PERMITTED = "✅ Permiso permitido"
 RESULT_PERMITTED_ALWAYS = "🔁 Permiso permitido siempre"
 RESULT_REJECTED = "❌ Permiso rechazado"
 RESULT_TIMED_OUT = "⏱️ El permiso expiró y se rechazó automáticamente"
+RESULT_CANCELLED = "⏹️ Permiso cancelado (turno interrumpido)"
 
 #: ``(request_id, decision) -> accepted`` — the router's ``resolve_from_ui``.
 ResolveCallback = Callable[[str, PermissionDecision], Awaitable[bool]]
@@ -59,6 +60,8 @@ DecisionHandler = Callable[[str, PermissionDecision], Awaitable[None]]
 
 def result_text(decision: PermissionDecision) -> str:
     """Return the one-line outcome rendered into the conversation."""
+    if decision.cancelled:
+        return RESULT_CANCELLED
     if decision.reply == "reject":
         return RESULT_TIMED_OUT if decision.timed_out else RESULT_REJECTED
     if decision.reply == "always":

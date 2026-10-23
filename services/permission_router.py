@@ -13,8 +13,13 @@ Flet, or both. The router owns that rendezvous:
      instead of raising ``InvalidStateError``.
   4. On timeout the router fails closed: it returns ``reject`` with
      ``timed_out=True`` and notifies the presenters so the UIs show the notice.
-     Without any presenter it rejects immediately — the agent must never hang.
-  5. The pending entry is always removed in ``finally`` (no leaked futures).
+     A timeout of ``0`` (or negative) disables the safety net and waits for the
+     human indefinitely. Without any presenter it rejects immediately — the
+     agent must never hang.
+  5. If the turn is interrupted the backend cancels this task; the router
+     notifies the presenters with ``cancelled=True`` and re-raises so every UI
+     closes its dialog.
+  6. The pending entry is always removed in ``finally`` (no leaked futures).
 
 The router only *decides*. The backend sends the decision to the server via
 ``POST /permission/{id}/reply``; UI adapters stay presentation-only.
@@ -40,6 +45,7 @@ DEFAULT_TIMEOUT = 300.0
 TIMEOUT_MESSAGE = "El permiso expiró y fue rechazado automáticamente."
 NO_PRESENTER_MESSAGE = "No hay una interfaz disponible para aprobar el permiso."
 DUPLICATE_MESSAGE = "Solicitud de permiso duplicada."
+CANCELLED_MESSAGE = "El turno se interrumpió antes de resolver el permiso."
 
 #: Keep a single log line readable: commands/patterns can be arbitrarily long.
 _FIELD_LIMIT = 300
@@ -150,7 +156,41 @@ class PermissionRouter:
         self._pending[request.id] = future
         show_task = asyncio.create_task(self._show_all(request))
         try:
+            if self._timeout <= 0:
+                # 0 = wait for the human with no deadline. The turn is then
+                # bounded only by an explicit cancellation.
+                return await future
             return await asyncio.wait_for(future, timeout=self._timeout)
+        except asyncio.CancelledError:
+            decision = PermissionDecision(
+                reply="reject",
+                message=CANCELLED_MESSAGE,
+                cancelled=True,
+            )
+            logger.warning(
+                "Permission request cancelled; rejecting",
+                extra={
+                    "event": "permission_cancelled",
+                    "request_id": request.id,
+                    "session_id": request.session_id,
+                },
+            )
+            logger.info(
+                "Permission resolved",
+                extra={
+                    "event": "permission_resolved",
+                    "request_id": request.id,
+                    "session_id": request.session_id,
+                    "reply": "reject",
+                    "timed_out": False,
+                    "cancelled": True,
+                    "via": "cancel",
+                },
+            )
+            # Tell every UI to close the dialog before propagating the
+            # cancellation: otherwise the buttons/dialog outlive the turn.
+            await self._resolve_all(request.id, decision)
+            raise
         except TimeoutError:
             decision = PermissionDecision(
                 reply="reject",

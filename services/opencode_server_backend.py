@@ -63,6 +63,10 @@ DEFAULT_PROGRESS_INTERVAL = 0.5
 DEFAULT_PROGRESS_TAIL = 600
 DEFAULT_RECONNECT_INITIAL = 0.5
 DEFAULT_RECONNECT_MAX = 5.0
+DEFAULT_PERMISSION_TIMEOUT = 300.0
+#: Slack on top of the router timeout so its reject reply can settle the task
+#: before the backend would cancel it (defense in depth only).
+PERMISSION_GRACE = 1.0
 PHASE3_REJECT_MESSAGE = "Las aprobaciones se habilitan en la Fase 3."
 
 #: ``info.finish`` values that mean the assistant turn is over. ``tool-calls``
@@ -72,6 +76,7 @@ _FINAL_FINISHES = frozenset(
 )
 
 _STREAM_END = object()
+_PERMISSION_SETTLED = object()
 
 
 @dataclass(frozen=True)
@@ -195,7 +200,8 @@ class OpenCodeServerBackend:
         client: OpenCodeServerClient,
         *,
         permission_handler: PermissionHandler | None = None,
-        timeout: int = 300,
+        timeout: float = 300.0,
+        permission_timeout: float = DEFAULT_PERMISSION_TIMEOUT,
         manager: OpenCodeServerManager | None = None,
         progress_interval: float = DEFAULT_PROGRESS_INTERVAL,
         progress_tail: int = DEFAULT_PROGRESS_TAIL,
@@ -208,6 +214,7 @@ class OpenCodeServerBackend:
         self._client = client
         self._permission_handler = permission_handler
         self._timeout = timeout
+        self._permission_timeout = permission_timeout
         self._manager = manager
         self._manager_ready = False
         self._progress_interval = progress_interval
@@ -234,7 +241,7 @@ class OpenCodeServerBackend:
         agent: str | None = None,
         workdir: str | None = None,
         source_label: str = "",
-        timeout: int | None = None,
+        timeout: float | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> AIBackendResult:
         """Run one prompt through the server and stream its output.
@@ -375,7 +382,7 @@ class OpenCodeServerBackend:
         prompt: str,
         model: str,
         agent: str | None,
-        effective_timeout: int,
+        effective_timeout: float,
         directory: str | None,
     ) -> AIBackendResult:
         loop = asyncio.get_running_loop()
@@ -462,24 +469,47 @@ class OpenCodeServerBackend:
             deadline = loop.time() + effective_timeout
             first_deadline = loop.time() + self._first_event_timeout
             saw_event = False
+            waited_for_permission = False
             while not self._cancelled:
                 if pending_permissions:
-                    # A human is deciding: do NOT let the prompt timeout run.
-                    deadline = loop.time() + effective_timeout
-                remaining = deadline - loop.time()
-                if not saw_event:
-                    # A healthy stream emits session/message events immediately.
-                    # No event at all means the stream is scoped wrong or dead:
-                    # fail fast instead of waiting out the (possibly 20 min)
-                    # idle deadline in silence.
-                    remaining = min(remaining, first_deadline - loop.time())
-                if remaining <= 0:
+                    # A human is deciding: SUSPEND the prompt idle deadline
+                    # entirely. The turn is bounded only by the permission
+                    # timeout (0 = wait indefinitely for the human), never by
+                    # OPENCODE_TIMEOUT.
+                    waited_for_permission = True
+                    wait_timeout: float | None = (
+                        None
+                        if self._permission_timeout <= 0
+                        else self._permission_timeout + PERMISSION_GRACE
+                    )
+                else:
+                    if waited_for_permission:
+                        # The dialog closed: restart the idle deadline so the
+                        # human wait does not consume the prompt budget.
+                        deadline = loop.time() + effective_timeout
+                        waited_for_permission = False
+                    remaining = deadline - loop.time()
                     if not saw_event:
-                        self._raise_no_events(session_id, directory)
-                    timed_out = True
-                    break
+                        # A healthy stream emits session/message events
+                        # immediately. No event at all means the stream is
+                        # scoped wrong or dead: fail fast instead of waiting
+                        # out the (possibly 20 min) idle deadline in silence.
+                        remaining = min(remaining, first_deadline - loop.time())
+                    if remaining <= 0:
+                        if not saw_event:
+                            self._raise_no_events(session_id, directory)
+                        timed_out = True
+                        break
+                    wait_timeout = remaining
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=remaining)
+                    if pending_permissions:
+                        item = await self._wait_with_permission(
+                            queue, pending_permissions, wait_timeout
+                        )
+                        if item is _PERMISSION_SETTLED:
+                            continue
+                    else:
+                        item = await asyncio.wait_for(queue.get(), timeout=wait_timeout)
                 except TimeoutError:
                     if not saw_event:
                         self._raise_no_events(session_id, directory)
@@ -574,6 +604,44 @@ class OpenCodeServerBackend:
             pump.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pump
+
+    async def _wait_with_permission(
+        self,
+        queue: asyncio.Queue[object],
+        pending: set[asyncio.Task[None]],
+        timeout: float | None,
+    ) -> object:
+        """Await the next SSE item OR a pending permission settling.
+
+        Returns ``_PERMISSION_SETTLED`` when a permission task finished before
+        any queue item, so the caller resumes the prompt idle deadline.
+        Raises ``TimeoutError`` when the permission budget expired while the
+        human was still deciding (defense in depth: the router normally
+        auto-rejects first).
+        """
+        getter: asyncio.Task[object] = asyncio.create_task(queue.get())
+        waiters: set[asyncio.Future[Any]] = {getter, *pending}
+        try:
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            getter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await getter
+            raise
+        if getter in done:
+            return getter.result()
+        getter.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await getter
+        for finished in done:
+            pending.discard(cast(asyncio.Task[None], finished))
+        if pending:
+            raise TimeoutError
+        return _PERMISSION_SETTLED
 
     def _raise_no_events(self, session_id: str, directory: str | None) -> NoReturn:
         """Fail fast when the SSE stream produced no event for this session."""

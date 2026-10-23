@@ -21,6 +21,7 @@ from services.opencode_server_backend import (
     PHASE3_REJECT_MESSAGE,
     OpenCodeServerBackend,
 )
+from services.permission_router import TIMEOUT_MESSAGE, PermissionRouter
 from services.permissions import PermissionDecision, PermissionRequest
 
 SID = "ses_backend_test"
@@ -594,6 +595,82 @@ async def test_permission_for_another_session_is_ignored() -> None:
     await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
 
     assert client.replies == []
+
+
+async def test_permission_pauses_the_prompt_deadline() -> None:
+    """A human wait must not consume ``OPENCODE_TIMEOUT`` (#2).
+
+    The prompt timeout (0.15s) is shorter than the time the handler takes
+    (0.2s). The old code cancelled the approval task at 0.15s: no reply was
+    sent and the turn failed. The deadline is now suspended while pending.
+    """
+
+    async def handler(request: PermissionRequest) -> PermissionDecision:
+        await asyncio.sleep(0.2)
+        return PermissionDecision(reply="once")
+
+    client = FakeClient(streams=[[_permission(), 0.3, _idle()]])
+
+    result = await _backend(
+        client,
+        permission_handler=handler,
+        timeout=0.15,
+        permission_timeout=0.5,
+    ).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.cancelled is False
+    assert result.stdout == ""
+    assert client.replies == [("per_1", "once", None)]
+    assert client.aborted == []
+
+
+async def test_zero_permission_timeout_never_auto_rejects() -> None:
+    """``0`` means the human has no deadline inside the turn (#2 / D4)."""
+
+    async def handler(request: PermissionRequest) -> PermissionDecision:
+        await asyncio.sleep(0.2)
+        return PermissionDecision(reply="once")
+
+    client = FakeClient(streams=[[_permission(), 0.3, _idle()]])
+
+    result = await _backend(
+        client,
+        permission_handler=handler,
+        timeout=0.15,
+        permission_timeout=0,
+    ).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.cancelled is False
+    assert client.replies == [("per_1", "once", None)]
+
+
+async def test_permission_timeout_expiry_rejects_and_notifies_presenters() -> None:
+    """The safety net still fires: reject the request and close the dialog."""
+    resolved: list[tuple[str, PermissionDecision]] = []
+
+    class _Presenter:
+        async def show(self, request: PermissionRequest) -> None:
+            return None
+
+        async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
+            resolved.append((request_id, decision))
+
+    router = PermissionRouter(presenters=[_Presenter()], timeout=0.1)
+    client = FakeClient(streams=[[_permission(), 0.3, _idle()]])
+
+    result = await _backend(
+        client,
+        permission_handler=router.request_permission,
+        timeout=0.5,
+        permission_timeout=0.1,
+    ).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == ""
+    assert client.replies == [("per_1", "reject", TIMEOUT_MESSAGE)]
+    assert len(resolved) == 1
+    assert resolved[0][0] == "per_1"
+    assert resolved[0][1].timed_out is True
+    assert resolved[0][1].cancelled is False
 
 
 # ── Dedup + reconnect ─────────────────────────────────────────────────────

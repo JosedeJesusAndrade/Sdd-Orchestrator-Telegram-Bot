@@ -34,12 +34,15 @@ class PermissionDecision:
     """The answer to a :class:`PermissionRequest`.
 
     ``timed_out`` lets presenters show "rechazado automáticamente" without
-    inspecting the message text.
+    inspecting the message text. ``cancelled`` means the whole turn was
+    interrupted while the dialog was still open, so presenters can close it
+    instead of leaving the buttons/dialog dangling.
     """
 
     reply: Reply
     message: str | None = None
     timed_out: bool = False
+    cancelled: bool = False
 
 
 class PermissionPort(Protocol):

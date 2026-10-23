@@ -163,6 +163,7 @@ def build_prompt_stack(
             # method so any PermissionPort implementation can be injected.
             permission_handler=resolved_port.request_permission,
             timeout=timeout,
+            permission_timeout=permission_timeout,
             manager=manager,
         )
     else:

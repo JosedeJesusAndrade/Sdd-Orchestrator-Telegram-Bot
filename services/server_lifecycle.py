@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from utils.logging import get_module_logger
+from services.opencode_server.errors import OpenCodeServerError
+from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
 
@@ -67,6 +69,63 @@ async def start_server_lifecycle(
 
     await start_polling()
     return supervisor
+
+
+async def start_server_or_exit(
+    manager: ServerLifecycle | None,
+    *,
+    start_polling: Callable[[], Awaitable[None]],
+    shutdown: Callable[[], Awaitable[None]],
+    on_error: Callable[[OpenCodeServerError], None],
+) -> asyncio.Task[None] | None:
+    """Start the server, and on ANY startup error tear down and exit 1.
+
+    Catches the BASE ``OpenCodeServerError``: a missing password
+    (``OpenCodeServerConfigError``) and a spawn/port failure
+    (``OpenCodeUnavailableError``) both used to reach ``bot.py``, but only the
+    config error was handled — the unavailable one escaped with a raw
+    traceback and skipped ``app.stop()/shutdown()``.
+
+    ``on_error`` owns the logging policy (the entry point knows the message).
+    ``shutdown`` mirrors the app teardown (``app.stop()`` + ``app.shutdown()``).
+    """
+    try:
+        return await start_server_lifecycle(manager, start_polling=start_polling)
+    except OpenCodeServerError as exc:
+        on_error(exc)
+        await stop_after_startup_failure(manager, shutdown=shutdown)
+        # Non-zero, clean exit: ``SystemExit`` never prints a traceback.
+        raise SystemExit(1) from None
+
+
+async def stop_after_startup_failure(
+    manager: ServerLifecycle | None,
+    *,
+    shutdown: Callable[[], Awaitable[None]],
+) -> None:
+    """Best-effort teardown after a failed startup; NEVER raises.
+
+    Order matters: stop the server this bot owns first (a half-spawned
+    ``opencode serve`` must not survive), then release the Bot API resources.
+    A broken ``stop()`` must not prevent ``shutdown()``.
+    """
+    if manager is not None:
+        try:
+            await manager.stop()
+        except Exception:
+            log_exception(
+                "opencode_server_startup_stop_failed",
+                module=__name__,
+                level=logging.ERROR,
+            )
+    try:
+        await shutdown()
+    except Exception:
+        log_exception(
+            "opencode_server_startup_shutdown_failed",
+            module=__name__,
+            level=logging.ERROR,
+        )
 
 
 async def stop_server_lifecycle(

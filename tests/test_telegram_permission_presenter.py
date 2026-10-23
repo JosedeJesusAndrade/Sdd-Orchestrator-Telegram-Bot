@@ -15,6 +15,7 @@ from telegram import Bot, InlineKeyboardMarkup
 
 from services.permissions import PermissionDecision, PermissionRequest
 from services.telegram_permission_presenter import (
+    RESULT_CANCELLED,
     RESULT_PERMITTED,
     RESULT_PERMITTED_ALWAYS,
     RESULT_REJECTED,
@@ -233,6 +234,10 @@ async def test_show_logs_the_presenter_show_event(
         (
             PermissionDecision(reply="reject", message="timeout", timed_out=True),
             RESULT_TIMED_OUT,
+        ),
+        (
+            PermissionDecision(reply="reject", message="cancelled", cancelled=True),
+            RESULT_CANCELLED,
         ),
     ],
 )

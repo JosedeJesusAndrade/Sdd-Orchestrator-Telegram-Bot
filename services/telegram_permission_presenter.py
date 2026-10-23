@@ -45,6 +45,7 @@ RESULT_PERMITTED = "✅ Permitido"
 RESULT_PERMITTED_ALWAYS = "✅ Permitido (siempre)"
 RESULT_REJECTED = "❌ Rechazado"
 RESULT_TIMED_OUT = "⏱️ Permiso rechazado automáticamente (timeout)"
+RESULT_CANCELLED = "⏹️ Permiso cancelado (turno interrumpido)"
 
 #: ``(chat_id, message_id, text)`` — the text is kept so ``resolve`` can append
 #: the outcome without re-rendering the request (the metadata may be gone).
@@ -73,6 +74,8 @@ def format_permission_request(request: PermissionRequest) -> str:
 
 def result_text(decision: PermissionDecision) -> str:
     """Return the one-line outcome appended by ``resolve``."""
+    if decision.cancelled:
+        return RESULT_CANCELLED
     if decision.reply == _REJECT_REPLY:
         return RESULT_TIMED_OUT if decision.timed_out else RESULT_REJECTED
     if decision.reply == _ALWAYS_REPLY:

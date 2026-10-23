@@ -215,13 +215,24 @@ OPENCODE_SERVER_HOST = os.getenv("OPENCODE_SERVER_HOST", "127.0.0.1")
 OPENCODE_SERVER_PORT = int(os.getenv("OPENCODE_SERVER_PORT", "4096"))
 OPENCODE_SERVER_PASSWORD = os.getenv("OPENCODE_SERVER_PASSWORD", "")
 OPENCODE_SERVER_BINARY = os.getenv("OPENCODE_SERVER_BINARY") or OPENCODE_CMD
+# Opt-in escape hatch for the loopback guard. The bot is the only client of the
+# agent, so a non-loopback host is rejected unless this is explicitly enabled.
+# It exists ONLY for deployments where the bot and the agent run on different
+# machines; clients (Telegram, APK) must still talk to the bot, never to the
+# engine. Validation happens at server construction, not at import time.
+OPENCODE_SERVER_ALLOW_REMOTE = os.getenv("OPENCODE_SERVER_ALLOW_REMOTE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 # How long a permission dialog may wait for a human before auto-rejecting.
-# 0 = wait INDEFINITELY for the human (no deadline while the dialog is open).
+# 0 (default) = wait INDEFINITELY for the human (no deadline while the dialog
+# is open): the agent must not proceed without consent, even if it takes hours.
 # A positive value N = auto-reject after N seconds as a safety net, so the
 # agent never stays blocked forever when nobody answers. Tune it to your
 # workflow: while a dialog is open the prompt's OPENCODE_TIMEOUT is suspended,
 # so a human wait never consumes the prompt budget.
-OPENCODE_PERMISSION_TIMEOUT = int(os.getenv("OPENCODE_PERMISSION_TIMEOUT", "300"))
+OPENCODE_PERMISSION_TIMEOUT = int(os.getenv("OPENCODE_PERMISSION_TIMEOUT", "0"))
 OPENCODE_BACKEND = os.getenv("OPENCODE_BACKEND", "server").strip().lower()
 
 # ─── OpenAI ───

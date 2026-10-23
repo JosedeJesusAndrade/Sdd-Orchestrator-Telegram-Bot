@@ -168,31 +168,49 @@ de trabajo de desarrollo:
 
 ### 3.1 Variables de Entorno
 
-Las variables se cargan desde un archivo `.env` en la raíz del proyecto:
+Las variables se cargan desde un archivo `.env` en la raíz del proyecto. La plantilla completa y comentada es [`.env.example`](.env.example):
 
 ```bash
 # ──── Telegram ────
 TELEGRAM_BOT_TOKEN=<token_del_bot_de_BotFather>
 ALLOWED_CHAT_IDS=<chat_id_1>,<chat_id_2>
 
-# ──── OpenCode CLI ────
+# ──── OpenCode ────
+OPENCODE_BACKEND=server                    # server (default) | cli (rollback)
 OPENCODE_WORKDIR=C:\Users\marie\Desktop\mono\python
 OPENCODE_TIMEOUT=600
 OPENCODE_CMD=                              # (opcional, auto-detectado)
+OPENCODE_PERMISSION_TIMEOUT=0              # 0 = esperar al humano sin límite
+
+# ──── Servidor OpenCode (solo OPENCODE_BACKEND=server) ────
+OPENCODE_SERVER_HOST=127.0.0.1             # loopback por defecto
+OPENCODE_SERVER_PORT=4096
+OPENCODE_SERVER_PASSWORD=                  # OBLIGATORIO en modo server
+OPENCODE_SERVER_BINARY=                    # vacío = usa OPENCODE_CMD
+OPENCODE_SERVER_ALLOW_REMOTE=              # 1 solo si bot y agente están en hosts distintos
 
 # ──── OpenAI (voice transcription) ────
 OPENAI_API_KEY=                            # (opcional)
-```bash
 ```
 
 | Variable | Requerida | Default | Descripción |
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | Sí | — | Token otorgado por @BotFather |
 | `ALLOWED_CHAT_IDS` | Sí | `""` | Chat IDs separados por coma (whitelist) |
+| `OPENCODE_BACKEND` | No | `server` | `server` (permisos + streaming) o `cli` (rollback) |
 | `OPENCODE_WORKDIR` | No | Raíz del proyecto | Directorio donde se ejecuta OpenCode |
 | `OPENCODE_TIMEOUT` | No | `300` | Timeout en segundos por prompt |
 | `OPENCODE_CMD` | No | Auto-detect | Ruta al ejecutable de OpenCode |
+| `OPENCODE_PERMISSION_TIMEOUT` | No | `0` | `0` = esperar al humano sin límite; `>0` = auto-rechazar |
+| `OPENCODE_SERVER_HOST` | No | `127.0.0.1` | Host de escucha; solo loopback salvo opt-in |
+| `OPENCODE_SERVER_PORT` | No | `4096` | Puerto del servidor |
+| `OPENCODE_SERVER_PASSWORD` | Sí en modo `server` | — | Basic auth; fail-fast si está vacía |
+| `OPENCODE_SERVER_BINARY` | No | `OPENCODE_CMD` | Binario para `opencode serve` |
+| `OPENCODE_SERVER_ALLOW_REMOTE` | No | Deshabilitado | `1` habilita un host no-loopback |
 | `OPENAI_API_KEY` | No | — | API key para transcripción de voz |
+
+En modo `server` el bot es el único cliente del agente: el servidor escucha en loopback y un host distinto lo hace fallar al arrancar. `OPENCODE_SERVER_PASSWORD` es obligatoria (genérala con `openssl rand -hex 16`); si no la defines, usa `OPENCODE_BACKEND=cli` como rollback.
+
 
 ### 3.2 Whitelist de Chat IDs
 

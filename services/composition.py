@@ -21,6 +21,7 @@ from config import (
     OPENCODE_BACKEND,
     OPENCODE_CMD,
     OPENCODE_PERMISSION_TIMEOUT,
+    OPENCODE_SERVER_ALLOW_REMOTE,
     OPENCODE_SERVER_BINARY,
     OPENCODE_SERVER_HOST,
     OPENCODE_SERVER_PASSWORD,
@@ -93,6 +94,7 @@ def build_prompt_stack(
     server_port: int = OPENCODE_SERVER_PORT,
     server_password: str = OPENCODE_SERVER_PASSWORD,
     server_binary: str = OPENCODE_SERVER_BINARY,
+    server_allow_remote: bool = OPENCODE_SERVER_ALLOW_REMOTE,
     permission_timeout: int = OPENCODE_PERMISSION_TIMEOUT,
     permission_port: PermissionPort | None = None,
     server_client: OpenCodeServerClient | None = None,
@@ -141,6 +143,7 @@ def build_prompt_stack(
                 password=server_password,
                 binary=server_binary,
                 directory=workdir,
+                allow_remote=server_allow_remote,
             )
         )
         client = server_client or OpenCodeServerClient(

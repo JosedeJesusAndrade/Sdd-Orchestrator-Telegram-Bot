@@ -108,31 +108,59 @@ python -m bot
 
 ## Configuración
 
-El bot carga su configuración desde variables de entorno definidas en un archivo `.env`:
+La plantilla completa, comentada y con los valores por defecto es [`.env.example`](.env.example). Cópiala a `.env` y completa los valores:
 
-```bash
-# Token entregado por @BotFather al crear el bot
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
-
-# Identificadores de chat autorizados, separados por coma.
-# Cada chat_id puede usar su propio workdir, modelo y timeout.
-ALLOWED_CHAT_IDS=123456789,-1001234567890
-
-# Directorio de trabajo donde OpenCode CLI ejecutará los prompts.
-# Puede ser sobreescrito por chat con /config.
-OPENCODE_WORKDIR=C:/ruta/al/proyecto
-
-# Timeout en segundos para la ejecución de un prompt.
-OPENCODE_TIMEOUT=600
-
-# Proveedor por defecto: opencode (único soportado actualmente).
-AI_PROVIDER=opencode
-
-# Clave de OpenAI para transcripción de notas de voz (opcional).
-OPENAI_API_KEY=
+```powershell
+Copy-Item .env.example .env
 ```
 
-Adicionalmente, la configuración puede ajustarse por chat mediante el comando `/config` sin necesidad de modificar el archivo `.env`.
+`config.py` carga `.env` al importarse, pero importar el módulo no arranca nada ni valida el servidor: las comprobaciones viven en el arranque real.
+
+| Variable | Obligatoria | Default | Notas |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Sí | — | Token de @BotFather |
+| `ALLOWED_CHAT_IDS` | Sí | — | Lista CSV; una lista vacía es fatal |
+| `OPENCODE_BACKEND` | No | `server` | `server` o `cli` (rollback) |
+| `OPENCODE_SERVER_PASSWORD` | Sí en modo `server` | — | Basic auth; nunca se registra |
+| `OPENCODE_TIMEOUT` | No | `300` | Timeout del prompt; se suspende con un permiso pendiente |
+| `OPENCODE_PERMISSION_TIMEOUT` | No | `0` | `0` = esperar al humano sin límite |
+
+El resto (`OPENCODE_WORKDIR`, `OPENCODE_CMD`, `OPENCODE_SERVER_HOST`, `OPENCODE_SERVER_PORT`, `OPENCODE_SERVER_BINARY`, `OPENCODE_SERVER_ALLOW_REMOTE`, `OPENAI_API_KEY`, `BOT_LOG_FORMAT`, `BOT_LOG_FILE`, `EXPLORE_DB`) está documentado en `.env.example`.
+
+Además, la configuración puede ajustarse por chat mediante el comando `/config` sin tocar `.env`.
+
+### Modo servidor vs. modo CLI
+
+- **`server` (default):** el bot lanza o adopta un proceso `opencode serve` y habla con él por HTTP/SSE. Es el único modo con **permisos interactivos** (los diálogos llegan a Telegram o a la GUI) y **streaming en vivo** del progreso.
+- **`cli` (rollback):** el bot ejecuta `opencode run --format json` por prompt. No necesita `OPENCODE_SERVER_PASSWORD` ni ofrece diálogos: OpenCode auto-rechaza los permisos en modo no interactivo. Úsalo si el servidor no está disponible, no si necesitas aprobar acciones.
+
+El servidor escucha solo en loopback (`127.0.0.1`, `::1`, `localhost`) porque el bot es su único cliente. Un host distinto falla al arrancar salvo `OPENCODE_SERVER_ALLOW_REMOTE=1`, que existe únicamente para cuando el bot y el agente viven en máquinas diferentes; nunca para clientes como el APK.
+
+### Permisos
+
+La política vive en la configuración del agente de OpenCode (`opencode.json`): cada clave (`bash`, `edit`, `read`, `external_directory`, …) se resuelve a `allow`, `ask` o `deny`. La última regla que coincide gana, así que pon los comodines primero y las excepciones después.
+
+- Un `ask` se convierte en un diálogo que el bot reenvía a Telegram (botones inline) o a la GUI de Flet.
+- `external_directory` controla cualquier lectura o escritura fuera del worktree; ponlo en `ask` si quieres aprobar esos accesos uno por uno.
+- `tools` está deprecado: `tools: { "bash": true }` equivale a `{"*": "allow"}` y **omite el diálogo**. Prefiere `permission` para conservar las aprobaciones.
+- `OPENCODE_PERMISSION_TIMEOUT=0` (default) espera al humano indefinidamente, incluso horas. Un valor `> 0` auto-rechaza tras N segundos como red de seguridad. Mientras hay un diálogo abierto, `OPENCODE_TIMEOUT` se suspende: la espera humana no consume el presupuesto del prompt.
+
+### GUI Flet
+
+```bash
+pip install -e ".[gui]"
+python -m flet_app.main
+```
+
+La GUI comparte el mismo servidor que el bot: si ya hay uno sano lo adopta, y al cerrarse no mata un proceso que no lanzó.
+
+### Solución de problemas
+
+- **La respuesta nunca llega / el stream SSE queda mudo:** falta o es incorrecto el `?directory=` de la conversación. Un directorio equivocado conecta el stream sin error HTTP pero no emite eventos; verifica `OPENCODE_WORKDIR` y el workdir del chat (`/config workdir`).
+- **El bot sale al arrancar con un mensaje sobre `OPENCODE_SERVER_PASSWORD`:** el modo `server` exige Basic auth. Define la variable (`openssl rand -hex 16`) o arranca con `OPENCODE_BACKEND=cli`.
+- **«OPENCODE_SERVER_HOST no es una dirección loopback»:** el servidor solo acepta loopback. Usa `127.0.0.1`, `::1` o `localhost`; si de verdad el agente vive en otro host, define `OPENCODE_SERVER_ALLOW_REMOTE=1` y protégelo con TLS y firewall.
+- **¿Quién es dueño del servidor?** El bot adopta un servidor sano y solo detiene el que él mismo lanzó. Bot y GUI pueden compartirlo.
+
 
 ## Uso
 

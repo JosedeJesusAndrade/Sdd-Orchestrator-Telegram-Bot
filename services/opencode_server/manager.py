@@ -40,6 +40,17 @@ HEALTH_TIMEOUT = 2.0
 START_POLL_INTERVAL = 0.2
 STOP_TIMEOUT = 5.0
 
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+NON_LOOPBACK_HOST_MESSAGE = (
+    "OPENCODE_SERVER_HOST={host!r} no es una dirección loopback y el servidor "
+    "OpenCode queda expuesto en la red. El bot es su ÚNICO cliente (los "
+    "clientes Telegram/APK nunca hablan con el agente): mantén el servidor en "
+    "127.0.0.1, ::1 o localhost. Solo si el bot y el agente viven en máquinas "
+    "distintas, define OPENCODE_SERVER_ALLOW_REMOTE=1 y protege el puerto con "
+    "TLS, firewall y una contraseña fuerte."
+)
+
 
 @dataclass(frozen=True)
 class ServerConfig:
@@ -47,6 +58,10 @@ class ServerConfig:
 
     ``password`` has no default on purpose: an empty value is rejected by
     ``ensure_running()`` / ``start()`` with ``OpenCodeServerConfigError``.
+
+    ``allow_remote`` opts out of the loopback guard. The guard is enforced
+    here (at construction, on the startup path) rather than in ``config.py``
+    so importing ``config`` stays side-effect free.
     """
 
     host: str = "127.0.0.1"
@@ -55,6 +70,14 @@ class ServerConfig:
     binary: str = "opencode"
     directory: str | Path = Path(__file__).resolve().parents[2]
     timeout: float = 20.0
+    allow_remote: bool = False
+
+    def __post_init__(self) -> None:
+        if self.allow_remote:
+            return
+        if self.host.strip().lower() in LOOPBACK_HOSTS:
+            return
+        raise OpenCodeServerConfigError(NON_LOOPBACK_HOST_MESSAGE.format(host=self.host))
 
 
 class OpenCodeServerManager:

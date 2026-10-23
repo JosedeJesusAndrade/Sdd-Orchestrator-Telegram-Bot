@@ -93,6 +93,13 @@ class OpenCodeServerManager:
         self._process: asyncio.subprocess.Process | None = None
         self._owned = False
         self._drain_tasks: list[asyncio.Task[None]] = []
+        #: Directory used by the process this manager spawned. Restarts reuse
+        #: it so the process cwd stays consistent with the first spawn
+        #: (per-call routing still uses ``?directory=``).
+        self._spawn_directory: Path | None = None
+        #: Adoption is logged at INFO only once per manager; probing a shared
+        #: server must not spam the log on every prompt.
+        self._adoption_logged = False
 
     @property
     def base_url(self) -> str:
@@ -131,10 +138,17 @@ class OpenCodeServerManager:
         self._require_password()
 
         if await self.health():
-            logger.info(
-                "OpenCode server already healthy; adopting it",
-                extra={"event": "opencode_server_adopted", "base_url": self.base_url},
-            )
+            if self._adoption_logged:
+                logger.debug(
+                    "OpenCode server already healthy; reusing the adopted instance",
+                    extra={"event": "opencode_server_adopted", "base_url": self.base_url},
+                )
+            else:
+                self._adoption_logged = True
+                logger.info(
+                    "OpenCode server already healthy; adopting it",
+                    extra={"event": "opencode_server_adopted", "base_url": self.base_url},
+                )
             return
 
         await self.start(directory=directory)
@@ -192,6 +206,7 @@ class OpenCodeServerManager:
 
         self._process = process
         self._owned = True
+        self._spawn_directory = workdir
         self._start_drainers(process)
 
         logger.info(
@@ -212,6 +227,12 @@ class OpenCodeServerManager:
         server cannot be orphaned. POSIX: ``terminate()``, wait up to 5s,
         then ``kill()``. An adopted server (``is_owned is False``) is never
         touched.
+
+        Ownership is cleared ONLY after the child is confirmed dead. If the
+        kill fails (``taskkill`` could not launch / returned non-zero) or the
+        wait times out, the process may still hold the port: keep it tracked
+        so a later ``stop()`` can retry, and log ERROR instead of pretending
+        the shutdown succeeded.
         """
         process = self._process
         if not self._owned or process is None:
@@ -227,7 +248,17 @@ class OpenCodeServerManager:
                 # wrapper and orphans the server (verified live: the child
                 # kept the port bound). Kill the whole tree up front instead.
                 forced = True
-                await self._taskkill(pid)
+                killed = await self._taskkill(pid)
+                if not killed:
+                    logger.warning(
+                        "taskkill did not confirm the OpenCode server tree was killed",
+                        extra={
+                            "event": "opencode_server_taskkill_unconfirmed",
+                            "pid": pid,
+                        },
+                    )
+                # Even when taskkill reports failure the child may have exited
+                # on its own; a bounded wait reaps it when that is the case.
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(process.wait(), timeout=STOP_TIMEOUT)
             else:
@@ -246,7 +277,22 @@ class OpenCodeServerManager:
                     forced = True
                     with contextlib.suppress(ProcessLookupError):
                         process.kill()
-                    await process.wait()
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(process.wait(), timeout=STOP_TIMEOUT)
+
+        if process.returncode is None:
+            # The kill could not be confirmed: the child may still be alive and
+            # hold the port. Keep ``_process``/``_owned``/drainers so a later
+            # ``stop()`` retries instead of forgetting a live orphan.
+            logger.error(
+                "OpenCode server stop could not be confirmed; keeping ownership",
+                extra={
+                    "event": "opencode_server_stop_unconfirmed",
+                    "pid": pid,
+                    "forced": forced,
+                },
+            )
+            return
 
         await self._cancel_drainers()
         self._process = None
@@ -258,9 +304,14 @@ class OpenCodeServerManager:
         )
 
     async def restart(self) -> None:
-        """Stop an owned server and bring a healthy one back (owned)."""
+        """Stop an owned server and bring a healthy one back (owned).
+
+        The replacement is spawned in the SAME directory as the original
+        spawn, so the process cwd and the conversation routing agree. A
+        never-started manager falls back to ``ServerConfig.directory``.
+        """
         await self.stop()
-        await self.ensure_running()
+        await self.ensure_running(directory=self._spawn_directory)
 
     async def run_forever(self) -> None:
         """Supervisor: restart after ``max_failures`` consecutive misses.
@@ -363,7 +414,12 @@ class OpenCodeServerManager:
                 await task
         self._drain_tasks.clear()
 
-    async def _taskkill(self, pid: int) -> None:
+    async def _taskkill(self, pid: int) -> bool:
+        """Kill a process tree; return True only when taskkill confirms it.
+
+        A launch ``OSError`` or a non-zero exit code means the tree may still
+        be alive, so the caller must keep ownership instead of clearing it.
+        """
         try:
             killer = await asyncio.create_subprocess_exec(
                 "taskkill",
@@ -382,3 +438,5 @@ class OpenCodeServerManager:
                 level=logging.WARNING,
                 pid=pid,
             )
+            return False
+        return killer.returncode == 0

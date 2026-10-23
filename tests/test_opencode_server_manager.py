@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -34,9 +35,11 @@ class _FakeProcess:
         self.terminated = True
 
     async def wait(self) -> int:
-        self.returncode = 0
         if self._wait_timeout:
+            # A real ``wait_for(process.wait())`` timeout leaves the child
+            # alive and ``returncode`` at ``None``; model that faithfully.
             raise TimeoutError
+        self.returncode = 0
         return 0
 
 
@@ -269,7 +272,13 @@ async def test_stop_kills_the_tree_on_windows(monkeypatch: pytest.MonkeyPatch) -
 
 async def test_stop_survives_wait_timeout_on_windows(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """A failed kill must NOT forget a child that may still hold the port.
+
+    The old expectation encoded the bug: ownership was cleared even though the
+    process was never confirmed dead, so a later stop could not retry.
+    """
     monkeypatch.setattr(manager_module, "IS_WINDOWS", True)
     manager = _manager(password="secret")
     process = _FakeProcess(pid=778, wait_timeout=True)
@@ -277,22 +286,53 @@ async def test_stop_survives_wait_timeout_on_windows(
     manager._owned = True
     calls = _install_spawn(monkeypatch, _KillProcess())
 
-    await manager.stop()
+    with caplog.at_level(logging.ERROR):
+        await manager.stop()
 
     assert calls == [("taskkill", "/F", "/T", "/PID", "778")]
-    assert manager._process is None
-    assert manager.is_owned is False
+    assert manager._process is cast(object, process)
+    assert manager.is_owned is True
+    events = [getattr(record, "event", "") for record in caplog.records]
+    assert "opencode_server_stop_unconfirmed" in events
+
+
+async def test_stop_keeps_ownership_when_taskkill_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An ``OSError`` from taskkill means the child may survive: keep it."""
+    monkeypatch.setattr(manager_module, "IS_WINDOWS", True)
+    manager = _manager(password="secret")
+    process = _FakeProcess(pid=779, wait_timeout=True)
+    manager._process = process  # type: ignore[assignment]
+    manager._owned = True
+
+    async def failing_exec(*args: object, **kwargs: object) -> object:
+        raise OSError("taskkill unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failing_exec)
+
+    with caplog.at_level(logging.DEBUG):
+        await manager.stop()
+
+    assert manager._process is cast(object, process)
+    assert manager.is_owned is True
+    events = [getattr(record, "event", "") for record in caplog.records]
+    assert "opencode_server_taskkill_failed" in events
+    assert "opencode_server_stop_unconfirmed" in events
 
 
 async def test_restart_stops_then_ensures_running(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = _manager(password="secret")
     order: list[str] = []
+    directories: list[object] = []
 
     async def stop() -> None:
         order.append("stop")
 
-    async def ensure_running() -> None:
+    async def ensure_running(*, directory: object = None) -> None:
         order.append("ensure_running")
+        directories.append(directory)
 
     monkeypatch.setattr(manager, "stop", stop)
     monkeypatch.setattr(manager, "ensure_running", ensure_running)
@@ -300,6 +340,7 @@ async def test_restart_stops_then_ensures_running(monkeypatch: pytest.MonkeyPatc
     await manager.restart()
 
     assert order == ["stop", "ensure_running"]
+    assert directories == [None]
 
 
 async def test_supervisor_restarts_after_three_failures(
@@ -404,3 +445,77 @@ async def test_ensure_running_forwards_directory_to_start(
     await manager.ensure_running(directory=Path("C:/conv/project"))
 
     assert started == [Path("C:/conv/project")]
+
+
+async def test_start_remembers_the_spawn_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(manager_module, "IS_WINDOWS", False)
+    manager = _manager(password="secret", binary="opencode", directory=Path("C:/default"))
+    _install_spawn(monkeypatch, _FakeProcess())
+
+    await manager.start(directory=Path("C:/conv/project"))
+    await asyncio.sleep(0)
+
+    assert manager._spawn_directory == Path("C:/conv/project")
+
+
+async def test_restart_respawns_in_the_remembered_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The replacement process uses the same cwd as the original spawn.
+
+    Per-call routing keeps using ``?directory=``; only the process cwd is
+    aligned instead of falling back to ``OPENCODE_WORKDIR``.
+    """
+    monkeypatch.setattr(manager_module, "IS_WINDOWS", False)
+    manager = _manager(password="secret", binary="opencode", directory=Path("C:/default"))
+    manager._spawn_directory = Path("C:/conv/project")
+    probes = iter([False, True])
+
+    async def health() -> bool:
+        return next(probes)
+
+    cwds: list[str] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProcess:
+        cwd = kwargs["cwd"]
+        assert isinstance(cwd, str)
+        cwds.append(cwd)
+        return _FakeProcess()
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(manager, "health", health)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    await manager.restart()
+
+    assert cwds == [str(Path("C:/conv/project"))]
+
+
+# -- Adoption log noise (#7) -----------------------------------------------
+
+
+async def test_adoption_is_logged_info_once_then_debug(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A backend per prompt must not spam "adopting it" at INFO."""
+    manager = _manager(password="secret")
+
+    async def healthy() -> bool:
+        return True
+
+    monkeypatch.setattr(manager, "health", healthy)
+
+    with caplog.at_level(logging.DEBUG, logger="opencode_bot"):
+        await manager.ensure_running()
+        await manager.ensure_running()
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "opencode_server_adopted"
+    ]
+    assert [record.levelno for record in records] == [logging.INFO, logging.DEBUG]

@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Protocol
 
 from services.opencode_server.errors import (
@@ -79,11 +80,67 @@ def log_startup_failure(error: OpenCodeServerError) -> None:
 class ServerLifecycle(Protocol):
     """Structural type of the manager pieces this module drives."""
 
-    async def ensure_running(self) -> None: ...
+    async def ensure_running(self, *, directory: str | Path | None = None) -> None: ...
 
     async def run_forever(self) -> None: ...
 
     async def stop(self) -> None: ...
+
+
+class WarmUpLifecycle(Protocol):
+    """Minimal contract for an eager GUI warm-up (no supervisor)."""
+
+    async def ensure_running(self, *, directory: str | Path | None = None) -> None: ...
+
+
+async def warm_up_server(
+    manager: WarmUpLifecycle | None,
+    *,
+    directory: str | Path | None = None,
+) -> bool:
+    """Bring the shared server up for the GUI; NEVER raise on a server error.
+
+    ``manager is None`` is the CLI rollback path, which needs no server. The
+    GUI must not crash when a spawn fails: it reports ``False`` so the caller
+    can show a notice and let the next prompt retry lazily.
+    """
+    if manager is None:
+        return True
+    try:
+        await manager.ensure_running(directory=directory)
+    except OpenCodeServerError as exc:
+        logger.warning(
+            "No se pudo preparar el servidor OpenCode para la GUI",
+            extra={
+                "event": "opencode_server_warm_up_failed",
+                "error_type": type(exc).__name__,
+                "directory": str(directory) if directory is not None else None,
+            },
+        )
+        return False
+    logger.info(
+        "OpenCode server ready for the GUI",
+        extra={
+            "event": "opencode_server_warm_up",
+            "directory": str(directory) if directory is not None else None,
+        },
+    )
+    return True
+
+
+def log_server_left_running(manager: object | None) -> None:
+    """Log that the GUI closed but the shared server was left running.
+
+    D5: the server lives always. Closing Flet must NEVER stop it — the bot may
+    be using the same process, and a stop would cause a supervisor outage.
+    """
+    logger.info(
+        "Flet closed; leaving the OpenCode server running for the bot",
+        extra={
+            "event": "opencode_server_left_running",
+            "owned": bool(getattr(manager, "is_owned", False)),
+        },
+    )
 
 
 async def start_server_lifecycle(

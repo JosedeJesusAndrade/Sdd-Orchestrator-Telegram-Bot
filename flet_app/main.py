@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 # ``flet run`` may execute this file with flet_app/ as sys.path[0]; make the
@@ -39,10 +40,37 @@ from services.agent_sessions import ConversationSummary, Message  # noqa: E402
 from services.composition import build_prompt_stack  # noqa: E402
 from services.frontend_gate import AllowAllGate  # noqa: E402
 from services.prompt_service import PromptAlreadyRunningError  # noqa: E402
+from services.server_lifecycle import (  # noqa: E402
+    WarmUpLifecycle,
+    log_server_left_running,
+    warm_up_server,
+)
 
 CONVERSATION_ID = "flet"
 
+WARM_UP_FAILED_MESSAGE = (
+    "⚠️ No se pudo preparar el servidor OpenCode. Revisa la configuración del "
+    "servidor y el log; el próximo mensaje volverá a intentarlo."
+)
+
 logger = logging.getLogger(__name__)
+
+
+async def warm_up_gui(
+    send_notice: Callable[[str], Awaitable[bool]],
+    manager: WarmUpLifecycle | None,
+    *,
+    directory: str | Path | None,
+) -> bool:
+    """Warm the shared server up and notify the user when it fails.
+
+    Extracted from :func:`main` so the startup behavior is unit-testable
+    without a live Flet session or a real server.
+    """
+    ready = await warm_up_server(manager, directory=directory)
+    if not ready:
+        await send_notice(WARM_UP_FAILED_MESSAGE)
+    return ready
 
 
 async def main(page: ft.Page) -> None:
@@ -170,6 +198,18 @@ async def main(page: ft.Page) -> None:
 
     chat.composer.bind(on_send)
     page.add(host.control)
+
+    def on_page_close() -> None:
+        # D5: the server lives always. The bot may be sharing this process, so
+        # closing the GUI never calls ``manager.stop()``; it only logs.
+        log_server_left_running(core.server_manager)
+
+    page.on_disconnect = on_page_close
+    page.on_close = on_page_close
+
+    # Eager warm-up AFTER the UI is mounted: adopt/spawn the shared server now
+    # instead of on the first prompt, and surface a clear notice on failure.
+    await warm_up_gui(view.send, core.server_manager, directory=workdir)
 
 
 if __name__ == "__main__":

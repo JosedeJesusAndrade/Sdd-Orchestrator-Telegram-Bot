@@ -152,7 +152,7 @@ pip install -e ".[gui]"
 python -m flet_app.main
 ```
 
-La GUI comparte el mismo servidor que el bot: si ya hay uno sano lo adopta, y al cerrarse no mata un proceso que no lanzó.
+La GUI comparte el mismo servidor que el bot: al arrancar lo adopta o lo lanza de forma anticipada y, al cerrarse, **nunca lo detiene** — el servidor vive siempre porque el bot puede estar usándolo. Si el arranque anticipado falla, la GUI muestra un aviso y el siguiente mensaje vuelve a intentarlo.
 
 ### Solución de problemas
 

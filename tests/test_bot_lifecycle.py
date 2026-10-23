@@ -25,11 +25,13 @@ from services.opencode_server.errors import (
 )
 from services.server_lifecycle import (
     SUPERVISOR_TASK_NAME,
+    log_server_left_running,
     log_startup_failure,
     start_server_lifecycle,
     start_server_or_exit,
     stop_after_startup_failure,
     stop_server_lifecycle,
+    warm_up_server,
 )
 
 
@@ -47,7 +49,7 @@ class _FakeManager:
         self.supervising = asyncio.Event()
         self.stop_calls = 0
 
-    async def ensure_running(self) -> None:
+    async def ensure_running(self, *, directory: object = None) -> None:
         self.order.append("ensure_running")
         if self.config_error:
             raise OpenCodeServerConfigError("OPENCODE_SERVER_PASSWORD is missing")
@@ -268,3 +270,68 @@ def test_unavailable_error_logs_the_startup_failed_event(
     ]
     assert len(records) == 1
     assert getattr(records[0], "error_type", None) == "OpenCodeUnavailableError"
+
+
+# ── Flet eager warm-up + never-stop close hook (#6) ──────────────────────
+
+
+class _WarmManager:
+    """Minimal manager for ``warm_up_server`` / the close hook."""
+
+    def __init__(self, *, fail: bool = False, owned: bool = False) -> None:
+        self.fail = fail
+        self.is_owned = owned
+        self.directories: list[object] = []
+        self.stop_calls = 0
+
+    async def ensure_running(self, *, directory: object = None) -> None:
+        self.directories.append(directory)
+        if self.fail:
+            raise OpenCodeUnavailableError("no se pudo iniciar opencode serve")
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+
+
+async def test_warm_up_server_calls_ensure_running_with_the_directory() -> None:
+    manager = _WarmManager()
+
+    ready = await warm_up_server(manager, directory="C:/base")
+
+    assert ready is True
+    assert manager.directories == ["C:/base"]
+
+
+async def test_warm_up_server_returns_false_on_a_server_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = _WarmManager(fail=True)
+
+    with caplog.at_level(logging.WARNING):
+        ready = await warm_up_server(manager, directory="C:/base")
+
+    assert ready is False
+    events = [getattr(record, "event", "") for record in caplog.records]
+    assert "opencode_server_warm_up_failed" in events
+
+
+async def test_warm_up_server_is_a_noop_without_a_server() -> None:
+    assert await warm_up_server(None, directory="C:/base") is True
+
+
+def test_close_hook_logs_owned_and_never_stops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = _WarmManager(owned=True)
+
+    with caplog.at_level(logging.INFO):
+        log_server_left_running(manager)
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "opencode_server_left_running"
+    ]
+    assert len(records) == 1
+    assert getattr(records[0], "owned", None) is True
+    assert manager.stop_calls == 0

@@ -27,6 +27,13 @@ PERMISSION_BUDGET_EXPIRED_REASON = "permission_budget_expired"
 #: explicit interruption.
 PERMISSION_TURN_ENDED_REASON = "permission_turn_ended"
 
+#: Visible notice for a permission reply the server NEVER accepted. The agent
+#: may keep waiting until its own timeout, so a silent "✅" would be a lie.
+PERMISSION_REPLY_NOT_ACCEPTED_NOTICE = (
+    "⚠️ Tu decisión de permiso no se pudo aplicar en el servidor. "
+    "El agente pudo haber seguido esperando."
+)
+
 
 @dataclass(frozen=True)
 class PermissionRequest:

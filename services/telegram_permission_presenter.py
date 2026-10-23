@@ -52,6 +52,10 @@ RESULT_TURN_ENDED = "⏹️ Permiso cerrado: el turno terminó antes de que resp
 #: the outcome without re-rendering the request (the metadata may be gone).
 _SentMessage = tuple[int, int, str]
 
+#: Bound the deferred map: only an in-flight ``show()`` can defer a decision,
+#: so exceeding this means something is leaking.
+_DEFERRED_LIMIT = 256
+
 
 def format_permission_request(request: PermissionRequest) -> str:
     """Render the request as a short, plain-text, mobile-friendly message."""
@@ -117,73 +121,126 @@ class TelegramPermissionPresenter:
         self._bot = bot
         self._chat_ids = tuple(chat_ids)
         self._sent: dict[str, list[_SentMessage]] = {}
+        #: Requests whose ``show()`` is still sending. A callback that wins the
+        #: fast-click race is deferred here instead of being silently dropped.
+        self._showing: set[str] = set()
+        self._deferred: dict[str, PermissionDecision] = {}
 
     async def show(self, request: PermissionRequest) -> None:
-        """Send the prompt + keyboard to every configured chat."""
+        """Send the prompt + keyboard to every configured chat.
+
+        The ``(chat_id, message_id)`` entries are appended IMMEDIATELY after
+        each ``send_message`` returns and the growing list is published before
+        the first send. A click can arrive while a message is still being sent
+        (the callback can fire before ``send_message`` returns), so a click in
+        that window is deferred and applied at the end of this method instead
+        of finding no message to edit.
+        """
         text = format_permission_request(request)
         keyboard = build_keyboard(request.id)
         sent: list[_SentMessage] = []
+        self._sent[request.id] = sent
+        self._showing.add(request.id)
 
-        for chat_id in self._chat_ids:
-            try:
-                message = await self._bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    reply_markup=keyboard,
-                )
-            except Exception as e:
-                # One unreachable chat must not prevent the others from seeing
-                # the request (the router also isolates presenter failures).
-                logger.warning(
-                    "Permission prompt could not be sent",
+        try:
+            for chat_id in self._chat_ids:
+                try:
+                    message = await self._bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    )
+                except Exception as e:
+                    # One unreachable chat must not prevent the others from
+                    # seeing the request (the router also isolates presenter
+                    # failures).
+                    logger.warning(
+                        "Permission prompt could not be sent",
+                        extra={
+                            "event": "permission_prompt_send_failed",
+                            "request_id": request.id,
+                            "chat_id": chat_id,
+                            "error_type": type(e).__name__,
+                        },
+                    )
+                    continue
+                sent.append((chat_id, message.message_id, text))
+
+            if sent:
+                logger.info(
+                    "Permission prompt sent",
                     extra={
-                        "event": "permission_prompt_send_failed",
+                        "event": "permission_prompt_sent",
                         "request_id": request.id,
-                        "chat_id": chat_id,
-                        "error_type": type(e).__name__,
+                        "session_id": request.session_id,
+                        "chats": len(sent),
                     },
                 )
-                continue
-            sent.append((chat_id, message.message_id, text))
-
-        if sent:
-            self._sent[request.id] = sent
             logger.info(
-                "Permission prompt sent",
+                "Permission presenter show",
                 extra={
-                    "event": "permission_prompt_sent",
+                    "event": "permission_presenter_show",
+                    "presenter": "telegram",
                     "request_id": request.id,
-                    "session_id": request.session_id,
                     "chats": len(sent),
+                    "configured_chats": len(self._chat_ids),
                 },
             )
-        logger.info(
-            "Permission presenter show",
-            extra={
-                "event": "permission_presenter_show",
-                "presenter": "telegram",
-                "request_id": request.id,
-                "chats": len(sent),
-                "configured_chats": len(self._chat_ids),
-            },
-        )
+        finally:
+            self._showing.discard(request.id)
+            deferred = self._deferred.pop(request.id, None)
+            if deferred is not None:
+                # The click beat the send: resolve the messages that DID land.
+                self._sent.pop(request.id, None)
+                if sent:
+                    await self._apply_resolution(request.id, sent, deferred)
+                else:
+                    self._log_resolved(request.id, deferred, 0)
 
     async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
         """Append the outcome and remove the keyboard from every message."""
-        sent = self._sent.pop(request_id, None)
-        if not sent:
-            logger.info(
-                "Permission presenter resolve",
-                extra={
-                    "event": "permission_presenter_resolve",
-                    "presenter": "telegram",
-                    "request_id": request_id,
-                    "reply": decision.reply,
-                    "sent_messages": 0,
-                },
-            )
+        if request_id in self._showing:
+            self._defer(request_id, decision)
             return
 
+        sent = self._sent.pop(request_id, None)
+        if not sent:
+            self._log_resolved(request_id, decision, 0)
+            return
+
+        await self._apply_resolution(request_id, sent, decision)
+
+    def _defer(self, request_id: str, decision: PermissionDecision) -> None:
+        """Hold a resolution that arrived before ``show()`` finished sending."""
+        if request_id not in self._deferred and len(self._deferred) >= _DEFERRED_LIMIT:
+            dropped = next(iter(self._deferred))
+            self._deferred.pop(dropped)
+            logger.warning(
+                "Permission deferred map is full; dropping the oldest resolution",
+                extra={
+                    "event": "permission_resolve_deferred_overflow",
+                    "request_id": dropped,
+                    "limit": _DEFERRED_LIMIT,
+                },
+            )
+        self._deferred[request_id] = decision
+        logger.info(
+            "Permission resolution deferred until the prompt is sent",
+            extra={
+                "event": "permission_resolve_deferred",
+                "presenter": "telegram",
+                "request_id": request_id,
+                "reply": decision.reply,
+            },
+        )
+
+    async def _apply_resolution(
+        self,
+        request_id: str,
+        sent: list[_SentMessage],
+        decision: PermissionDecision,
+    ) -> None:
+        """Edit every sent message with the outcome and remove its keyboard."""
         outcome = result_text(decision)
         # Empty markup = remove the inline keyboard (omitting reply_markup would
         # leave the buttons clickable after the request is already resolved).
@@ -207,6 +264,14 @@ class TelegramPermissionPresenter:
                     error_type=type(e).__name__,
                 )
 
+        self._log_resolved(request_id, decision, len(sent))
+
+    def _log_resolved(
+        self,
+        request_id: str,
+        decision: PermissionDecision,
+        sent_messages: int,
+    ) -> None:
         logger.info(
             "Permission presenter resolve",
             extra={
@@ -214,6 +279,6 @@ class TelegramPermissionPresenter:
                 "presenter": "telegram",
                 "request_id": request_id,
                 "reply": decision.reply,
-                "sent_messages": len(sent),
+                "sent_messages": sent_messages,
             },
         )

@@ -23,6 +23,7 @@ from services.opencode_server_backend import (
     PHASE3_REJECT_MESSAGE,
     OpenCodeServerBackend,
     _PermissionBudget,
+    _TurnState,
 )
 from services.permission_router import TIMEOUT_MESSAGE, TURN_ENDED_MESSAGE, PermissionRouter
 from services.permissions import PermissionDecision, PermissionRequest
@@ -251,6 +252,34 @@ class FakeClient:
         return None
 
 
+class _FailingReplyClient(FakeClient):
+    """``FakeClient`` whose permission replies fail a scripted number of times."""
+
+    def __init__(self, failures: list[Exception], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._failures = list(failures)
+        self.reply_calls: list[str] = []
+
+    async def reply_permission(
+        self,
+        request_id: str,
+        reply: str,
+        message: str | None = None,
+        *,
+        directory: str | None = None,
+    ) -> bool:
+        self.reply_calls.append(request_id)
+        self.directories["reply"].append(directory)
+        if self._failures:
+            raise self._failures.pop(0)
+        return await super().reply_permission(
+            request_id,
+            reply,
+            message,
+            directory=directory,
+        )
+
+
 def _backend(client: FakeClient, **kwargs: Any) -> OpenCodeServerBackend:
     kwargs.setdefault("progress_interval", 0.0)
     return OpenCodeServerBackend(client, **kwargs)  # type: ignore[arg-type]
@@ -418,6 +447,119 @@ async def test_progress_uses_reasoning_then_text_but_final_is_text_only() -> Non
     assert "pensando" not in result.stdout
 
 
+async def test_late_reasoning_metadata_reclassifies_an_early_delta() -> None:
+    """#8: a reasoning delta that beats its metadata must leave the text.
+
+    When ``message.part.delta`` arrives before ``message.part.updated``, the
+    part type is unknown and the delta is buffered as visible text. The late
+    metadata must MOVE it to the reasoning bucket so it never reaches stdout.
+    """
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_a", "assistant"),
+                _reasoning_delta("pensando paso a paso", part_id="p_r"),
+                _part("p_r", "reasoning", "pensando paso a paso", message_id="msg_a"),
+                _part("p_t", "text", ""),
+                _delta("Listo", part_id="p_t"),
+                _part("p_t", "text", "Listo", message_id="msg_a"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Listo"
+    assert "pensando" not in result.stdout
+
+
+async def test_late_reasoning_metadata_without_full_text_still_moves_the_delta() -> None:
+    """The metadata may arrive with an empty ``text``; the delta still moves."""
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_a", "assistant"),
+                _reasoning_delta("cadena de pensamiento", part_id="p_r"),
+                _part("p_r", "reasoning", "", message_id="msg_a"),
+                _delta("Respuesta", part_id="p_t"),
+                _part("p_t", "text", "Respuesta", message_id="msg_a"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Respuesta"
+    assert "cadena" not in result.stdout
+
+
+async def test_final_text_is_disjoint_from_reasoning_in_a_mixed_sequence() -> None:
+    """#8 dedicated proof: the final delivered text contains ZERO reasoning.
+
+    The sequence mixes a prompt part, a reasoning part whose delta arrives
+    FIRST, and the assistant answer whose delta also arrives first. Only the
+    answer may survive.
+    """
+    client = FakeClient(
+        streams=[
+            [
+                _message_updated("msg_u", "user"),
+                _part("p_u", "text", "haz un commit", message_id="msg_u"),
+                _delta("haz un commit", part_id="p_u"),
+                _message_updated("msg_a", "assistant"),
+                _reasoning_delta("CHAIN-OF-THOUGHT", part_id="p_r"),
+                _part("p_r", "reasoning", "CHAIN-OF-THOUGHT", message_id="msg_a"),
+                _delta("FINAL-ANSWER", part_id="p_t"),
+                _part("p_t", "text", "FINAL-ANSWER", message_id="msg_a"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "FINAL-ANSWER"
+    assert "CHAIN-OF-THOUGHT" not in result.stdout
+    assert "haz un commit" not in result.stdout
+
+
+async def test_user_delta_before_the_role_is_dropped() -> None:
+    """#8: the user's prompt text can also arrive before ``role=user``."""
+    client = FakeClient(
+        streams=[
+            [
+                _delta("haz un commit", part_id="p_u"),
+                _part("p_u", "text", "haz un commit", message_id="msg_u"),
+                _message_updated("msg_u", "user"),
+                _part("p_t", "text", ""),
+                _delta("Listo", part_id="p_t"),
+                _part("p_t", "text", "Listo", message_id="msg_a"),
+                _message_updated("msg_a", "assistant"),
+                _idle(),
+            ]
+        ]
+    )
+
+    result = await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert result.stdout == "Listo"
+    assert "haz un commit" not in result.stdout
+
+
+def test_reclassification_keeps_the_two_buckets_disjoint() -> None:
+    """Vice versa: the reasoning bucket never contains the visible answer."""
+    turn = _TurnState()
+    turn.append_text("p_r", "CHAIN-OF-THOUGHT")
+    turn.reclassify_as_reasoning("p_r")
+    turn.set_text("p_t", "FINAL-ANSWER")
+
+    assert turn.text == "FINAL-ANSWER"
+    assert turn.reasoning == "CHAIN-OF-THOUGHT"
+    assert "FINAL-ANSWER" not in turn.reasoning
+
+
 async def test_session_status_idle_terminates_without_session_idle() -> None:
     client = FakeClient(streams=[[_delta("Hola"), _status("idle")]])
 
@@ -580,7 +722,7 @@ async def test_permission_handler_receives_request_and_replies() -> None:
 
     client = FakeClient(streams=[[_permission(), _idle()]])
 
-    await _backend(client, permission_handler=handler).execute(
+    result = await _backend(client, permission_handler=handler).execute(
         prompt="x",
         model="openai/gpt",
         session_id=None,
@@ -590,6 +732,7 @@ async def test_permission_handler_receives_request_and_replies() -> None:
     assert requests[0].permission == "bash"
     assert requests[0].patterns == ("git commit *",)
     assert client.replies == [("per_1", "once", None)]
+    assert result.permission_reply_not_accepted is False
 
 
 async def test_permission_for_another_session_is_ignored() -> None:
@@ -598,6 +741,85 @@ async def test_permission_for_another_session_is_ignored() -> None:
     await _backend(client).execute(prompt="x", model="openai/gpt", session_id=None)
 
     assert client.replies == []
+
+
+async def test_connect_failure_retries_the_permission_reply_once_then_succeeds() -> None:
+    """#12 / D7: retry ONCE when the reply never reached the server."""
+
+    async def handler(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision(reply="once")
+
+    client = _FailingReplyClient(
+        [OpenCodeUnavailableError("sin conexión", retryable=True)],
+        streams=[[_permission(), 0.05, _idle()]],
+    )
+
+    result = await _backend(
+        client,
+        permission_handler=handler,
+        reply_retry_delay=0.0,
+    ).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert client.reply_calls == ["per_1", "per_1"]
+    assert client.replies == [("per_1", "once", None)]
+    assert result.permission_reply_not_accepted is False
+
+
+async def test_connect_failure_twice_reports_the_explicit_not_accepted_state(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The decision was NOT applied: the result says so and logs ERROR."""
+
+    async def handler(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision(reply="once")
+
+    client = _FailingReplyClient(
+        [
+            OpenCodeUnavailableError("sin conexión", retryable=True),
+            OpenCodeUnavailableError("sigue sin conexión", retryable=True),
+        ],
+        streams=[[_permission(), 0.05, _idle()]],
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = await _backend(
+            client,
+            permission_handler=handler,
+            reply_retry_delay=0.0,
+        ).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert client.reply_calls == ["per_1", "per_1"]
+    assert client.replies == []
+    assert result.permission_reply_not_accepted is True
+    not_accepted = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "permission_reply_not_accepted"
+    ]
+    assert len(not_accepted) == 1
+    assert getattr(not_accepted[0], "retried", None) is True
+
+
+async def test_read_timeout_is_never_retried_and_reports_not_accepted() -> None:
+    """A read timeout is ambiguous: resending could duplicate the reply."""
+
+    async def handler(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision(reply="once")
+
+    client = _FailingReplyClient(
+        [OpenCodeUnavailableError("read timeout", retryable=False)],
+        streams=[[_permission(), 0.05, _idle()]],
+    )
+
+    result = await _backend(
+        client,
+        permission_handler=handler,
+        reply_retry_delay=0.0,
+    ).execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert client.reply_calls == ["per_1"]
+    assert client.replies == []
+    assert result.permission_reply_not_accepted is True
 
 
 async def test_permission_pauses_the_prompt_deadline() -> None:

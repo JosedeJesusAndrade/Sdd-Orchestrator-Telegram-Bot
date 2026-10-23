@@ -94,6 +94,33 @@ def test_parse_json_output_falls_back_to_raw_stdout_on_malformed_input(caplog) -
     )
 
 
+def test_parse_json_output_drift_still_recovers_the_ses_id(caplog) -> None:
+    """#3: a ``--format json`` drift must not lose session continuity.
+
+    The parser cannot read the NDJSON, but the CLI still prints the ``ses_...``
+    id in the raw output, so the rollback adopts it instead of starting cold.
+    """
+    raw = "opencode drift output\nsesión: ses_deadbeef1234\nlisto\n"
+
+    with caplog.at_level(logging.WARNING, logger="services.opencode_cli_backend"):
+        text, session_id = _parse_json_output(raw)
+
+    assert text == raw
+    assert session_id == "ses_deadbeef1234"
+
+
+def test_parse_json_output_uses_the_regex_when_events_omit_the_id() -> None:
+    """Parsing succeeded but the event shape has no id: keep continuity."""
+    events = (
+        '{"type":"text","part":{"type":"text","text":"Hola"},"meta":{"session":"ses_abc12345"}}\n'
+    )
+
+    text, session_id = _parse_json_output(events)
+
+    assert text == "Hola\n"
+    assert session_id == "ses_abc12345"
+
+
 def test_parse_json_output_empty_stdout_is_silent(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="services.opencode_cli_backend"):
         assert _parse_json_output("") == ("", None)
@@ -156,6 +183,29 @@ async def test_execute_returns_parsed_text_and_session(monkeypatch) -> None:
     assert result.stdout == "Hola\n"
     assert result.session_id == SID
     assert result.returncode == 0
+
+
+async def test_execute_persists_the_drift_ses_id_through_the_backend(monkeypatch) -> None:
+    """End-to-end (#3): drift stdout → the backend still returns the id."""
+    drift = f"drift sin ndjson, sesión {SID}\n"
+    capture = _CaptureExec(stdout=drift.encode("utf-8"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+
+    backend = OpenCodeCLIBackend("opencode", workdir=".")
+    result = await backend.execute(prompt="hola", model="m", session_id=None)
+
+    assert result.stdout == drift
+    assert result.session_id == SID
+
+
+async def test_execute_without_any_ses_id_returns_none(monkeypatch) -> None:
+    capture = _CaptureExec(stdout=b"drift sin identificador\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+
+    backend = OpenCodeCLIBackend("opencode", workdir=".")
+    result = await backend.execute(prompt="hola", model="m", session_id=None)
+
+    assert result.session_id is None
 
 
 # â”€â”€ PromptService capture + continuity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

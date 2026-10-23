@@ -48,11 +48,23 @@ class OpenCodeUnavailableError(OpenCodeServerError):
 
     ``status_code`` is ``None`` for transport-level failures (connection
     refused, timeout) and the HTTP status for server-side failures.
+
+    ``retryable`` is True ONLY when the request never reached the server
+    (connection refused / connect timeout). It is the license to resend a
+    non-idempotent call such as a permission reply: a read timeout or a 5xx is
+    ambiguous because the server may already have applied it.
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retryable = retryable
 
 
 class OpenCodeStreamError(OpenCodeServerError):

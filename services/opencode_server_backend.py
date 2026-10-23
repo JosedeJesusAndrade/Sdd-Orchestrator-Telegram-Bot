@@ -73,6 +73,8 @@ DEFAULT_PERMISSION_TIMEOUT = 300.0
 #: before the backend would cancel it (defense in depth only).
 PERMISSION_GRACE = 1.0
 PHASE3_REJECT_MESSAGE = "Las aprobaciones se habilitan en la Fase 3."
+#: Delay before the single safe reply retry (connect-phase failures only).
+REPLY_RETRY_DELAY = 0.5
 
 #: ``info.finish`` values that mean the assistant turn is over. ``tool-calls``
 #: is explicitly NOT final: the model will continue after the tool result.
@@ -193,6 +195,38 @@ class _TurnState:
             self.reasoning_order.append(part_id)
         self.reasoning_parts[part_id] = self.reasoning_parts.get(part_id, "") + delta
 
+    def drop_text(self, part_id: str) -> str | None:
+        """Remove a part from the visible-text bucket and return what it held."""
+        text = self.text_parts.pop(part_id, None)
+        if part_id in self.text_order:
+            self.text_order.remove(part_id)
+        return text
+
+    def reclassify_as_reasoning(self, part_id: str) -> None:
+        """Move a delta-first part from text into reasoning.
+
+        A ``message.part.delta`` can arrive before its ``message.part.updated``
+        metadata. Until then the part type is unknown, so the delta was
+        buffered as visible text (the only safe default). When the metadata
+        reveals ``reasoning``, the buffered text MUST move buckets: otherwise
+        the chain of thought would leak into the final answer.
+        """
+        moved = self.drop_text(part_id)
+        if moved:
+            self.append_reasoning(part_id, moved)
+
+    def drop_message_text(self, message_id: str) -> None:
+        """Drop every buffered text part belonging to ``message_id``.
+
+        The user's prompt is a ``text`` part too. A delta can arrive before its
+        message role is known; once the role is ``user`` the buffered prompt
+        must be removed (a sent message cannot be "unsent").
+        """
+        for part_id in [
+            part_id for part_id, owner in self.part_messages.items() if owner == message_id
+        ]:
+            self.drop_text(part_id)
+
 
 class _PermissionBudget:
     """Absolute deadline for one spell with at least one pending permission.
@@ -242,6 +276,7 @@ class OpenCodeServerBackend:
         connect_timeout: float = CONNECT_WAIT,
         request_timeout: float = REQUEST_TIMEOUT,
         first_event_timeout: float = FIRST_EVENT_TIMEOUT,
+        reply_retry_delay: float = REPLY_RETRY_DELAY,
     ) -> None:
         self._client = client
         self._permission_handler = permission_handler
@@ -256,8 +291,10 @@ class OpenCodeServerBackend:
         self._connect_timeout = connect_timeout
         self._request_timeout = request_timeout
         self._first_event_timeout = first_event_timeout
+        self._reply_retry_delay = reply_retry_delay
 
         self._cancelled = False
+        self._reply_not_accepted = 0
         self._active_session_id: str | None = None
         self._active_directory: str | None = None
         self._queue: asyncio.Queue[object] | None = None
@@ -288,6 +325,7 @@ class OpenCodeServerBackend:
         effective_timeout = timeout if timeout is not None else self._timeout
         directory = workdir
         self._cancelled = False
+        self._reply_not_accepted = 0
         self._abort_task = None
         self._active_directory = directory
         self._progress = _ProgressEmitter(
@@ -600,7 +638,11 @@ class OpenCodeServerBackend:
             )
 
             if self._cancelled:
-                return AIBackendResult(session_id=session_id, cancelled=True)
+                return AIBackendResult(
+                    session_id=session_id,
+                    cancelled=True,
+                    permission_reply_not_accepted=self._reply_not_accepted > 0,
+                )
 
             if timed_out:
                 await self._abort()
@@ -655,9 +697,14 @@ class OpenCodeServerBackend:
                     stderr=str(last_error),
                     returncode=1,
                     session_id=session_id,
+                    permission_reply_not_accepted=self._reply_not_accepted > 0,
                 )
 
-            return AIBackendResult(stdout=text, session_id=session_id)
+            return AIBackendResult(
+                stdout=text,
+                session_id=session_id,
+                permission_reply_not_accepted=self._reply_not_accepted > 0,
+            )
         finally:
             self._queue = None
             self._pump_task = None
@@ -806,6 +853,10 @@ class OpenCodeServerBackend:
         role = _optional_str(info_data.get("role"))
         if message_id and role:
             turn.message_roles[message_id] = role
+            if role == "user":
+                # The prompt may already be buffered as text if its delta beat
+                # the role metadata. It must never reach the final answer.
+                turn.drop_message_text(message_id)
 
         if info_data.get("error") is not None and info_data.get("error") != {}:
             raise OpenCodeStreamError(
@@ -862,14 +913,25 @@ class OpenCodeServerBackend:
             turn.set_part_message(part_id, message_id)
 
         text = part_data.get("text")
-        if not isinstance(text, str):
-            return
+        authoritative = text if isinstance(text, str) and text else None
+
         if part_type == "text":
             if turn.is_user_part(part_id):
+                # A delta may have been buffered before the role was known.
+                turn.drop_text(part_id)
                 return
-            turn.set_text(part_id, text)
+            if authoritative is None:
+                return
+            turn.set_text(part_id, authoritative)
         elif part_type == "reasoning":
-            turn.set_reasoning(part_id, text)
+            # The delta may have arrived BEFORE this metadata: its text was
+            # wrongfully buffered as visible. Move it now; the full text (when
+            # present) is authoritative and replaces the accumulated deltas.
+            turn.reclassify_as_reasoning(part_id)
+            if authoritative is not None:
+                turn.set_reasoning(part_id, authoritative)
+            elif part_id not in turn.reasoning_parts:
+                return
         else:
             return
         await self._emit_progress(turn)
@@ -925,7 +987,19 @@ class OpenCodeServerBackend:
         self,
         request: PermissionRequest,
         decision: PermissionDecision,
-    ) -> None:
+    ) -> bool:
+        """Send the decision; retry ONCE only when the request never landed.
+
+        A connect-phase failure (``httpx.ConnectError``/``ConnectTimeout``) is
+        the ONLY safe retry: the server never saw the reply, so resending it
+        cannot duplicate a side effect. A read timeout or a 5xx is ambiguous
+        (the server may already have applied it), so it is never retried.
+
+        Returns ``True`` when the server accepted the reply. On failure it
+        returns ``False`` AND records the explicit "not accepted" state exposed
+        by ``AIBackendResult``: a silent success would tell the user their
+        decision was applied when it was not.
+        """
         try:
             await self._client.reply_permission(
                 request.id,
@@ -933,12 +1007,74 @@ class OpenCodeServerBackend:
                 decision.message,
                 directory=self._active_directory,
             )
-        except Exception:
-            log_exception(
-                "permission_reply_failed",
-                module=__name__,
-                level=logging.ERROR,
+            return True
+        except OpenCodeUnavailableError as exc:
+            if not exc.retryable:
+                self._record_reply_not_accepted(request, decision, exc, retried=False)
+                return False
+            logger.warning(
+                "Retrying permission reply after a connect failure",
+                extra={
+                    "event": "permission_reply_retry",
+                    "request_id": request.id,
+                    "session_id": request.session_id,
+                    "retry_delay_s": self._reply_retry_delay,
+                },
             )
+        except Exception as exc:
+            # A 4xx/5xx is typed by the client; anything else here is just as
+            # ambiguous, so never retry it.
+            self._record_reply_not_accepted(request, decision, exc, retried=False)
+            return False
+
+        await asyncio.sleep(self._reply_retry_delay)
+        try:
+            await self._client.reply_permission(
+                request.id,
+                decision.reply,
+                decision.message,
+                directory=self._active_directory,
+            )
+        except Exception as exc:
+            self._record_reply_not_accepted(request, decision, exc, retried=True)
+            return False
+
+        logger.info(
+            "Permission reply accepted after retry",
+            extra={
+                "event": "permission_reply_retried",
+                "request_id": request.id,
+                "session_id": request.session_id,
+            },
+        )
+        return True
+
+    def _record_reply_not_accepted(
+        self,
+        request: PermissionRequest,
+        decision: PermissionDecision,
+        exc: Exception,
+        *,
+        retried: bool,
+    ) -> None:
+        """Record + log an unapplied decision (never a silent success).
+
+        ``_reply_not_accepted`` is surfaced through ``AIBackendResult`` so a
+        frontend can warn the user that the agent may still be waiting.
+        """
+        self._reply_not_accepted += 1
+        logger.error(
+            "Permission reply not accepted: the user's decision was NOT applied",
+            extra={
+                "event": "permission_reply_not_accepted",
+                "request_id": request.id,
+                "session_id": request.session_id,
+                "reply": decision.reply,
+                "retried": retried,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            },
+        )
 
     @staticmethod
     async def _finish_permissions(

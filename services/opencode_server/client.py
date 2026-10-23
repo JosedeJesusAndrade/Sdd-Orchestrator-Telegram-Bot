@@ -297,8 +297,13 @@ class OpenCodeServerClient:
                 json=json,
             )
         except httpx.HTTPError as exc:
+            # Only connection establishment failures are safe to retry for a
+            # non-idempotent call: the server never received the request. A
+            # read timeout or a connection drop AFTER sending is ambiguous.
+            retryable = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
             raise OpenCodeUnavailableError(
-                f"No se pudo conectar con el servidor OpenCode ({method} {path}): {exc}"
+                f"No se pudo conectar con el servidor OpenCode ({method} {path}): {exc}",
+                retryable=retryable,
             ) from exc
 
         if response.status_code >= 400:

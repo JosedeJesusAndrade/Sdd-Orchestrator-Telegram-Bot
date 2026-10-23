@@ -8,6 +8,7 @@ the resolve edit (outcome + keyboard removal), and graceful edit failures.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import pytest
@@ -61,6 +62,9 @@ class _RecordingBot:
         self._fail_chats = fail_chats or set()
         self._fail_edit = fail_edit
         self._next_id = 100
+        #: Optional hook invoked INSIDE ``send_message`` (before it returns) to
+        #: simulate a permission callback that wins the fast-click race.
+        self.on_sent: Callable[[], Awaitable[None]] | None = None
 
     async def send_message(
         self,
@@ -80,7 +84,10 @@ class _RecordingBot:
                 "reply_markup": reply_markup,
             }
         )
-        return _FakeMessage(self._next_id, text)
+        message = _FakeMessage(self._next_id, text)
+        if self.on_sent is not None:
+            await self.on_sent()
+        return message
 
     async def edit_message_text(
         self,
@@ -221,6 +228,65 @@ async def test_show_logs_the_presenter_show_event(
     assert getattr(shown[0], "request_id", None) == request.id
     assert getattr(shown[0], "chats", None) == 1
     assert getattr(shown[0], "configured_chats", None) == 1
+
+
+# ── Fast-click race (#9) ──────────────────────────────────────────────────
+
+
+async def test_click_racing_the_send_still_edits_the_message() -> None:
+    """A callback can fire BEFORE ``send_message`` returns (#9).
+
+    The old code published ``_sent`` only after the whole loop, so ``resolve``
+    found nothing and the message kept its live buttons. The resolution is now
+    deferred and applied once the message id is known.
+    """
+    bot = _RecordingBot()
+    presenter = _presenter(bot, [1])
+    request = _request()
+    clicked: list[str] = []
+
+    async def click_inside_send() -> None:
+        clicked.append("yes")
+        await presenter.resolve(request.id, PermissionDecision(reply="once"))
+
+    bot.on_sent = click_inside_send
+
+    await presenter.show(request)
+
+    assert clicked == ["yes"]
+    assert len(bot.edits) == 1
+    edit = bot.edits[0]
+    assert edit["chat_id"] == 1
+    assert edit["message_id"] == 101
+    assert edit["text"] == f"{format_permission_request(request)}\n\n{RESULT_PERMITTED}"
+    assert isinstance(edit["reply_markup"], InlineKeyboardMarkup)
+    assert len(edit["reply_markup"].inline_keyboard) == 0
+    assert request.id not in presenter._sent
+
+
+async def test_click_during_the_first_send_resolves_every_later_message() -> None:
+    """A deferred click must close ALL fan-out messages, not only the first."""
+    bot = _RecordingBot()
+    presenter = _presenter(bot, [1, 2, 3])
+    request = _request()
+    sends = 0
+
+    async def click_once() -> None:
+        nonlocal sends
+        sends += 1
+        if sends == 1:
+            await presenter.resolve(request.id, PermissionDecision(reply="reject"))
+
+    bot.on_sent = click_once
+
+    await presenter.show(request)
+
+    assert len(bot.edits) == 3
+    assert [edit["message_id"] for edit in bot.edits] == [101, 102, 103]
+    assert all(edit["text"].endswith(RESULT_REJECTED) for edit in bot.edits)
+    assert all(len(edit["reply_markup"].inline_keyboard) == 0 for edit in bot.edits)
+    assert request.id not in presenter._sent
+    assert presenter._deferred == {}
 
 
 # ── resolve() ─────────────────────────────────────────────────────────────

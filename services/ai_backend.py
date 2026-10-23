@@ -25,6 +25,10 @@ class AIBackendResult:
     cancelled: bool = False
     timed_out: bool = False
     session_id: str | None = None
+    #: True when this turn produced a permission decision the server NEVER
+    #: accepted. The decision was not applied, so a frontend must say so
+    #: explicitly instead of rendering a silent success.
+    permission_reply_not_accepted: bool = False
 
 
 @runtime_checkable

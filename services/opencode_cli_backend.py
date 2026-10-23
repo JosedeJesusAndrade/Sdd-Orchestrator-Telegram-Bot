@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from collections.abc import Awaitable, Callable
@@ -22,6 +23,18 @@ from services.ai_backend import AIBackendResult
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
+
+#: Fallback session id for the CLI rollback path. ``--format json`` drift makes
+#: the parser return no id; the CLI still prints/echoes the ``ses_...`` id in
+#: the raw output. Without this, a rollback loses session continuity for that
+#: prompt (every prompt would start cold).
+_SESSION_ID_RE = re.compile(r"\bses_[A-Za-z0-9]{8,}\b")
+
+
+def _extract_session_id(raw_stdout: str) -> str | None:
+    """Best-effort ``ses_...`` id from arbitrary CLI output (drift fallback)."""
+    match = _SESSION_ID_RE.search(raw_stdout)
+    return match.group(0) if match else None
 
 
 def _part_error_message(part: dict[str, Any]) -> str | None:
@@ -52,8 +65,9 @@ def _parse_json_output(raw_stdout: str) -> tuple[str, str | None]:
     and keeps one trailing newline.
 
     Robustness: if the output is not valid NDJSON (CLI version drift), the
-    raw stdout is returned as the response text with ``session_id=None`` so
-    the caller still shows *something* instead of crashing.
+    raw stdout is returned as the response text with the session id recovered
+    by the ``ses_...`` regex when present. A prompt that echoes an id could be
+    adopted, but this path only runs when JSON parsing failed.
     """
     if not raw_stdout.strip():
         return "", None
@@ -97,8 +111,12 @@ def _parse_json_output(raw_stdout: str) -> tuple[str, str | None]:
             "Could not parse JSON output; falling back to raw stdout",
             extra={"event": "json_output_parse_failed", "cmd": "opencode"},
         )
-        return raw_stdout, None
+        return raw_stdout, _extract_session_id(raw_stdout)
 
+    # Parsing succeeded but the event shape may have changed with no id: keep
+    # the continuity with the same regex instead of starting cold.
+    if not session_id:
+        session_id = _extract_session_id(raw_stdout)
     if texts:
         return "\n".join(texts) + "\n", session_id
     if error_texts:

@@ -45,6 +45,7 @@ from config import (
     OPENCODE_WORKDIR,
     PROGRESS_UPDATE_INTERVAL,
 )
+from services.permissions import PERMISSION_REPLY_NOT_ACCEPTED_NOTICE
 from utils.logging import get_module_logger, log_exception
 
 if TYPE_CHECKING:
@@ -310,6 +311,7 @@ class PromptService:
                 "returncode": 0,
                 "cancelled": True,
                 "session_id": None,
+                "permission_reply_not_accepted": False,
             }
 
         # ``on_progress`` is only forwarded when the backend streams: the CLI
@@ -341,6 +343,7 @@ class PromptService:
             "returncode": result.returncode,
             "cancelled": conversation_id in self._cancel or result.cancelled,
             "session_id": result.session_id,
+            "permission_reply_not_accepted": result.permission_reply_not_accepted,
         }
 
     # ── Internal: response delivery ─────────────────────────────────
@@ -380,6 +383,12 @@ class PromptService:
             else:
                 response = "\u2705 Completado (sin output)."
 
+        # A permission decision the server never accepted must be VISIBLE: the
+        # agent may still be waiting, so a silent "✅" would be a lie.
+        not_accepted = bool(result.get("permission_reply_not_accepted"))
+        if not_accepted:
+            response = f"{response}\n\n{PERMISSION_REPLY_NOT_ACCEPTED_NOTICE}"
+
         # Prepend new-session header for brand-new sessions
         if session is not None and not session.real_id and session.name:
             response = f"\U0001f195 Nueva sesión '{session.name}' iniciada\n\n" + response
@@ -408,7 +417,7 @@ class PromptService:
         # stuck on "⏳". Before F8, an undelivered response called NEITHER
         # finish NOR error, so the "⏳ OpenCode procesando..." message lived
         # forever.
-        if response_sent and is_success:
+        if response_sent and is_success and not not_accepted:
             try:
                 await handle.finish("\u2705 Completado.")
             except Exception:
@@ -417,6 +426,8 @@ class PromptService:
                     module=__name__,
                     level=logging.DEBUG,
                 )
+        elif response_sent and not_accepted:
+            await handle.error("\u26a0\ufe0f La decisión de permiso no se aplicó en el servidor.")
         elif not response_sent:
             await handle.error("\u26a0\ufe0f No se pudo entregar la respuesta.")
         else:

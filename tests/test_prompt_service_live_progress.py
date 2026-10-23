@@ -17,6 +17,7 @@ import pytest
 from services.ai_backend import AIBackendResult
 from services.chat_view import ConversationId
 from services.opencode_server.errors import OpenCodeStreamError
+from services.permissions import PERMISSION_REPLY_NOT_ACCEPTED_NOTICE
 from services.prompt_service import PromptService
 from services.session_store import SessionInfo
 
@@ -225,3 +226,28 @@ async def test_session_id_from_result_is_persisted() -> None:
     await service.execute(conversation_id=1, prompt_text="hola", view=_View())
 
     assert store.updated == [(1, SID)]
+
+
+async def test_unapplied_permission_decision_is_visible_not_a_silent_success() -> None:
+    """#12: a reply the server never accepted must be explicit to the user."""
+    backend = _Backend(
+        live=True,
+        result=AIBackendResult(
+            stdout="Respuesta final",
+            permission_reply_not_accepted=True,
+        ),
+        delay=0.0,
+    )
+    view = _View()
+    service = PromptService(
+        session_store=_Store(_session("ses_existing")),
+        provider_factory=_Factory(backend),
+    )
+
+    await service.execute(conversation_id=1, prompt_text="hola", view=view)
+
+    assert view.sent == [f"Respuesta final\n\n{PERMISSION_REPLY_NOT_ACCEPTED_NOTICE}"]
+    assert view.handle.finished == []
+    assert view.handle.errors == [
+        "\u26a0\ufe0f La decisión de permiso no se aplicó en el servidor."
+    ]

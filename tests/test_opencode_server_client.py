@@ -325,6 +325,49 @@ async def test_prompt_does_not_retry_on_5xx(
     assert len(calls) == 1
 
 
+async def test_connect_error_is_marked_retryable(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    """#12: the request never left, so a permission reply may be resent."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = make_client(handler)
+
+    with pytest.raises(OpenCodeUnavailableError) as exc_info:
+        await client.reply_permission("per_1", "once")
+
+    assert exc_info.value.retryable is True
+
+
+async def test_read_timeout_is_not_marked_retryable(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    """A read timeout is ambiguous: the server may already have applied it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = make_client(handler)
+
+    with pytest.raises(OpenCodeUnavailableError) as exc_info:
+        await client.reply_permission("per_1", "once")
+
+    assert exc_info.value.retryable is False
+
+
+async def test_5xx_is_not_marked_retryable(
+    make_client: Callable[..., OpenCodeServerClient],
+) -> None:
+    client = make_client(lambda _request: httpx.Response(500))
+
+    with pytest.raises(OpenCodeUnavailableError) as exc_info:
+        await client.reply_permission("per_1", "once")
+
+    assert exc_info.value.retryable is False
+
+
 async def test_health_true_on_200_and_false_on_401(
     make_client: Callable[..., OpenCodeServerClient],
 ) -> None:

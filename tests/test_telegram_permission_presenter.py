@@ -239,6 +239,10 @@ async def test_show_logs_the_presenter_show_event(
             PermissionDecision(reply="reject", message="cancelled", cancelled=True),
             RESULT_CANCELLED,
         ),
+        (
+            PermissionDecision(reply="reject", message="expired", timed_out=True, cancelled=True),
+            RESULT_TIMED_OUT,
+        ),
     ],
 )
 async def test_resolve_edits_message_and_removes_keyboard(

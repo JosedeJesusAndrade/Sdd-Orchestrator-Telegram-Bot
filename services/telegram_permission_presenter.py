@@ -73,11 +73,18 @@ def format_permission_request(request: PermissionRequest) -> str:
 
 
 def result_text(decision: PermissionDecision) -> str:
-    """Return the one-line outcome appended by ``resolve``."""
+    """Return the one-line outcome appended by ``resolve``.
+
+    ``timed_out`` wins over ``cancelled``: the backend's own budget expiring
+    cancels the task but the human timed out, so "expired" is the honest
+    message. A real interruption (turn cancelled) carries only ``cancelled``.
+    """
+    if decision.timed_out:
+        return RESULT_TIMED_OUT
     if decision.cancelled:
         return RESULT_CANCELLED
     if decision.reply == _REJECT_REPLY:
-        return RESULT_TIMED_OUT if decision.timed_out else RESULT_REJECTED
+        return RESULT_REJECTED
     if decision.reply == _ALWAYS_REPLY:
         return RESULT_PERMITTED_ALWAYS
     return RESULT_PERMITTED

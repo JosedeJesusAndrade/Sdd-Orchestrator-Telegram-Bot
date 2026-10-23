@@ -14,6 +14,12 @@ from typing import Any, Literal, Protocol
 
 Reply = Literal["once", "always", "reject"]
 
+#: Cancellation message the backend attaches to ``Task.cancel()`` when its own
+#: permission budget expires. The router maps it to ``timed_out=True`` so UIs
+#: say "expired" instead of "turn interrupted" (defense in depth only: the
+#: router's shorter timeout normally settles the request first).
+PERMISSION_BUDGET_EXPIRED_REASON = "permission_budget_expired"
+
 
 @dataclass(frozen=True)
 class PermissionRequest:
@@ -36,7 +42,9 @@ class PermissionDecision:
     ``timed_out`` lets presenters show "rechazado automáticamente" without
     inspecting the message text. ``cancelled`` means the whole turn was
     interrupted while the dialog was still open, so presenters can close it
-    instead of leaving the buttons/dialog dangling.
+    instead of leaving the buttons/dialog dangling. Both flags are set when the
+    backend's own budget expires (cancelled by us, but the human timed out):
+    presenters must render that as "expired", not as an interrupted turn.
     """
 
     reply: Reply

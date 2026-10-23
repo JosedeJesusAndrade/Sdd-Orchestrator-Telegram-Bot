@@ -59,11 +59,18 @@ DecisionHandler = Callable[[str, PermissionDecision], Awaitable[None]]
 
 
 def result_text(decision: PermissionDecision) -> str:
-    """Return the one-line outcome rendered into the conversation."""
+    """Return the one-line outcome rendered into the conversation.
+
+    ``timed_out`` wins over ``cancelled``: the backend's own budget expiring
+    cancels the task but the human timed out, so "expired" is the honest
+    message. A real interruption (turn cancelled) carries only ``cancelled``.
+    """
+    if decision.timed_out:
+        return RESULT_TIMED_OUT
     if decision.cancelled:
         return RESULT_CANCELLED
     if decision.reply == "reject":
-        return RESULT_TIMED_OUT if decision.timed_out else RESULT_REJECTED
+        return RESULT_REJECTED
     if decision.reply == "always":
         return RESULT_PERMITTED_ALWAYS
     return RESULT_PERMITTED

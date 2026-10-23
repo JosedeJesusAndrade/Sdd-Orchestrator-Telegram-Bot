@@ -18,7 +18,11 @@ from services.permission_router import (
     TIMEOUT_MESSAGE,
     PermissionRouter,
 )
-from services.permissions import PermissionDecision, PermissionRequest
+from services.permissions import (
+    PERMISSION_BUDGET_EXPIRED_REASON,
+    PermissionDecision,
+    PermissionRequest,
+)
 
 SID = "ses_router_test"
 
@@ -353,6 +357,29 @@ async def test_cancellation_notifies_presenters(
     assert presenter.resolved == [(request.id, expected)]
     assert router.pending_count == 0
     assert any(getattr(record, "event", "") == "permission_cancelled" for record in caplog.records)
+
+
+async def test_budget_expiry_cancellation_is_reported_as_timed_out() -> None:
+    """The backend's own budget cancellation must not look like a UI cancel."""
+    request = _request()
+    presenter = RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+
+    task = asyncio.create_task(router.request_permission(request))
+    await asyncio.wait_for(presenter.shown_event.wait(), timeout=1.0)
+
+    task.cancel(PERMISSION_BUDGET_EXPIRED_REASON)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    expected = PermissionDecision(
+        reply="reject",
+        message=TIMEOUT_MESSAGE,
+        timed_out=True,
+        cancelled=True,
+    )
+    assert presenter.resolved == [(request.id, expected)]
+    assert router.pending_count == 0
 
 
 async def test_concurrent_requests_are_independent() -> None:

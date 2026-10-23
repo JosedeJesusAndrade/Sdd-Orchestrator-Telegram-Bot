@@ -66,11 +66,8 @@ from persistence.sessions import fetch_opencode_sessions  # noqa: E402
 from services.composition import build_prompt_stack  # noqa: E402
 from services.container import AppContainer  # noqa: E402
 from services.message_sender import MessageSender  # noqa: E402
-from services.opencode_server.errors import (  # noqa: E402
-    OpenCodeServerConfigError,
-    OpenCodeServerError,
-)
 from services.server_lifecycle import (  # noqa: E402
+    log_startup_failure,
     start_server_or_exit,
     stop_server_lifecycle,
 )
@@ -81,19 +78,6 @@ from utils.logging import get_module_logger, log_exception  # noqa: E402
 # Literal "bot" (not __name__): this module runs as "__main__", which would
 # produce the unhelpful logger name "opencode_bot.__main__".
 logger = get_module_logger("bot")
-
-# Fail-fast message for a misconfigured server backend. Printed with
-# logger.critical() (which always reaches the console handler) before exit.
-SERVER_CONFIG_ERROR_MESSAGE = (
-    "No se puede iniciar el bot en modo servidor: falta OPENCODE_SERVER_PASSWORD. "
-    "El servidor OpenCode exige Basic auth; define la variable en .env "
-    "(recomendado: openssl rand -hex 16) o usa OPENCODE_BACKEND=cli."
-)
-SERVER_STARTUP_ERROR_MESSAGE = (
-    "No se pudo iniciar el servidor OpenCode. Revisa el puerto "
-    "(OPENCODE_SERVER_PORT), que no lo ocupe otro proceso con otras "
-    "credenciales, y OPENCODE_SERVER_BINARY."
-)
 
 
 # ── Connection state tracking ──────────────────────────────────────────
@@ -396,38 +380,19 @@ async def run_bot() -> None:
     async def start_polling() -> None:
         await updater.start_polling()
 
-    def _on_startup_failure(error: OpenCodeServerError) -> None:
-        """Log the failure before the lifecycle helper exits non-zero."""
-        if isinstance(error, OpenCodeServerConfigError):
-            logger.critical(
-                SERVER_CONFIG_ERROR_MESSAGE,
-                extra={
-                    "event": "opencode_server_config_error",
-                    "error_type": type(error).__name__,
-                },
-                exc_info=True,
-            )
-            return
-        logger.critical(
-            SERVER_STARTUP_ERROR_MESSAGE,
-            extra={
-                "event": "opencode_server_startup_failed",
-                "error_type": type(error).__name__,
-            },
-            exc_info=True,
-        )
-
     async def _shutdown_after_startup_failure() -> None:
         await app.stop()
         await app.shutdown()
 
     # Catches the BASE error (config + unavailable): a failed spawn/port must
     # also release the Bot API resources and exit 1 without a raw traceback.
+    # The log-event mapping lives in ``server_lifecycle`` so it is unit-testable
+    # without importing this PTB entry point.
     server_supervisor = await start_server_or_exit(
         core.server_manager,
         start_polling=start_polling,
         shutdown=_shutdown_after_startup_failure,
-        on_error=_on_startup_failure,
+        on_error=log_startup_failure,
     )
 
     # ── Shared shutdown event + exit code ───────────────────────────

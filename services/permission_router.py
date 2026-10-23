@@ -18,7 +18,8 @@ Flet, or both. The router owns that rendezvous:
      agent must never hang.
   5. If the turn is interrupted the backend cancels this task; the router
      notifies the presenters with ``cancelled=True`` and re-raises so every UI
-     closes its dialog.
+     closes its dialog. When the cancellation carries the backend's budget
+     expiry reason, the notice is ``timed_out=True`` instead ("expired").
   6. The pending entry is always removed in ``finally`` (no leaked futures).
 
 The router only *decides*. The backend sends the decision to the server via
@@ -33,6 +34,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from services.permissions import (
+    PERMISSION_BUDGET_EXPIRED_REASON,
     PermissionDecision,
     PermissionPresenter,
     PermissionRequest,
@@ -161,16 +163,23 @@ class PermissionRouter:
                 # bounded only by an explicit cancellation.
                 return await future
             return await asyncio.wait_for(future, timeout=self._timeout)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            # The backend's own budget expiring is still a cancellation, but
+            # the human actually timed out: carry both flags so the UIs show
+            # "expired" instead of "turn interrupted".
+            expired = PERMISSION_BUDGET_EXPIRED_REASON in (exc.args or ())
             decision = PermissionDecision(
                 reply="reject",
-                message=CANCELLED_MESSAGE,
+                message=TIMEOUT_MESSAGE if expired else CANCELLED_MESSAGE,
+                timed_out=expired,
                 cancelled=True,
             )
             logger.warning(
-                "Permission request cancelled; rejecting",
+                "Permission budget expired; rejecting"
+                if expired
+                else "Permission request cancelled; rejecting",
                 extra={
-                    "event": "permission_cancelled",
+                    "event": ("permission_budget_expired" if expired else "permission_cancelled"),
                     "request_id": request.id,
                     "session_id": request.session_id,
                 },
@@ -182,9 +191,9 @@ class PermissionRouter:
                     "request_id": request.id,
                     "session_id": request.session_id,
                     "reply": "reject",
-                    "timed_out": False,
+                    "timed_out": expired,
                     "cancelled": True,
-                    "via": "cancel",
+                    "via": "budget_expired" if expired else "cancel",
                 },
             )
             # Tell every UI to close the dialog before propagating the

@@ -48,7 +48,11 @@ from services.opencode_server.errors import (
     OpenCodeUnavailableError,
 )
 from services.opencode_server.manager import OpenCodeServerManager
-from services.permissions import PermissionDecision, PermissionRequest
+from services.permissions import (
+    PERMISSION_BUDGET_EXPIRED_REASON,
+    PermissionDecision,
+    PermissionRequest,
+)
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
@@ -187,6 +191,33 @@ class _TurnState:
         if part_id not in self.reasoning_parts:
             self.reasoning_order.append(part_id)
         self.reasoning_parts[part_id] = self.reasoning_parts.get(part_id, "") + delta
+
+
+class _PermissionBudget:
+    """Absolute deadline for one spell with at least one pending permission.
+
+    The deadline is armed ONCE when the first request of the spell appears and
+    is NOT re-armed when a permission settles while others are still pending:
+    "wait up to ``permission_timeout + grace``" describes the whole human
+    interaction, not each individual wait. The spell ends (``clear()``) when
+    every request has settled; a later spell gets a fresh budget.
+
+    ``timeout <= 0`` means no deadline at all (D4: wait indefinitely).
+    """
+
+    def __init__(self, timeout: float) -> None:
+        self._timeout = timeout
+        self._deadline: float | None = None
+
+    def remaining(self, now: float) -> float | None:
+        if self._timeout <= 0:
+            return None
+        if self._deadline is None:
+            self._deadline = now + self._timeout + PERMISSION_GRACE
+        return self._deadline - now
+
+    def clear(self) -> None:
+        self._deadline = None
 
 
 class OpenCodeServerBackend:
@@ -470,24 +501,29 @@ class OpenCodeServerBackend:
             first_deadline = loop.time() + self._first_event_timeout
             saw_event = False
             waited_for_permission = False
+            permission_budget = _PermissionBudget(self._permission_timeout)
+            permission_expired = False
             while not self._cancelled:
                 if pending_permissions:
                     # A human is deciding: SUSPEND the prompt idle deadline
                     # entirely. The turn is bounded only by the permission
-                    # timeout (0 = wait indefinitely for the human), never by
-                    # OPENCODE_TIMEOUT.
+                    # budget (0 = wait indefinitely for the human), never by
+                    # OPENCODE_TIMEOUT. The budget is absolute for the whole
+                    # spell, so settling one of several dialogs does not
+                    # restart it.
                     waited_for_permission = True
-                    wait_timeout: float | None = (
-                        None
-                        if self._permission_timeout <= 0
-                        else self._permission_timeout + PERMISSION_GRACE
-                    )
+                    wait_timeout = permission_budget.remaining(loop.time())
+                    if wait_timeout is not None and wait_timeout <= 0:
+                        timed_out = True
+                        permission_expired = True
+                        break
                 else:
                     if waited_for_permission:
                         # The dialog closed: restart the idle deadline so the
                         # human wait does not consume the prompt budget.
                         deadline = loop.time() + effective_timeout
                         waited_for_permission = False
+                    permission_budget.clear()
                     remaining = deadline - loop.time()
                     if not saw_event:
                         # A healthy stream emits session/message events
@@ -513,6 +549,8 @@ class OpenCodeServerBackend:
                 except TimeoutError:
                     if not saw_event:
                         self._raise_no_events(session_id, directory)
+                    if pending_permissions:
+                        permission_expired = True
                     timed_out = True
                     break
 
@@ -550,7 +588,9 @@ class OpenCodeServerBackend:
 
             # Give an in-flight reply a chance to leave before we return.
             await self._finish_permissions(
-                pending_permissions, cancelled=self._cancelled or timed_out
+                pending_permissions,
+                cancelled=self._cancelled or timed_out,
+                expired=permission_expired,
             )
 
             if self._cancelled:
@@ -558,16 +598,26 @@ class OpenCodeServerBackend:
 
             if timed_out:
                 await self._abort()
+                timeout_s = self._permission_timeout if permission_expired else effective_timeout
                 logger.error(
-                    "OpenCode prompt timed out without a terminal event",
+                    "OpenCode permission budget expired without a decision"
+                    if permission_expired
+                    else "OpenCode prompt timed out without a terminal event",
                     extra={
                         "event": "opencode_prompt_timeout",
                         "session_id": session_id,
-                        "timeout_s": effective_timeout,
+                        "timeout_s": timeout_s,
+                        "reason": ("permission_budget_expired" if permission_expired else "idle"),
                         "text_length": len(turn.text),
                         "reasoning_length": len(turn.reasoning),
                     },
                 )
+                if permission_expired:
+                    raise OpenCodeStreamError(
+                        f"El permiso de OpenCode no se resolvió en {timeout_s:g}s "
+                        "(la interfaz no respondió a la solicitud).",
+                        directory=directory,
+                    )
                 raise OpenCodeStreamError(
                     f"El turno de OpenCode no terminó en {effective_timeout:g}s "
                     "(sin session.idle ni mensaje final).",
@@ -611,13 +661,13 @@ class OpenCodeServerBackend:
         pending: set[asyncio.Task[None]],
         timeout: float | None,
     ) -> object:
-        """Await the next SSE item OR a pending permission settling.
+        """Await the next SSE item OR any pending permission settling.
 
-        Returns ``_PERMISSION_SETTLED`` when a permission task finished before
-        any queue item, so the caller resumes the prompt idle deadline.
-        Raises ``TimeoutError`` when the permission budget expired while the
-        human was still deciding (defense in depth: the router normally
-        auto-rejects first).
+        Returns the queue item when the stream wins, or ``_PERMISSION_SETTLED``
+        when a permission task finished first (the caller re-checks the pending
+        set and keeps waiting for the rest). Raises ``TimeoutError`` ONLY when
+        the wait itself timed out with nothing completed: a settled permission
+        next to another still-pending one is not an expired budget.
         """
         getter: asyncio.Task[object] = asyncio.create_task(queue.get())
         waiters: set[asyncio.Future[Any]] = {getter, *pending}
@@ -632,15 +682,22 @@ class OpenCodeServerBackend:
             with contextlib.suppress(asyncio.CancelledError):
                 await getter
             raise
-        if getter in done:
-            return getter.result()
+        if not done:
+            # Nothing completed before the timeout: a real budget expiry.
+            getter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await getter
+            raise TimeoutError
         getter.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await getter
         for finished in done:
-            pending.discard(cast(asyncio.Task[None], finished))
-        if pending:
-            raise TimeoutError
+            if finished is not getter:
+                pending.discard(cast(asyncio.Task[None], finished))
+        if getter.done() and not getter.cancelled():
+            # The item arrived in the same tick we cancelled the getter: never
+            # drop an SSE event just because a permission settled first.
+            return getter.result()
         return _PERMISSION_SETTLED
 
     def _raise_no_events(self, session_id: str, directory: str | None) -> NoReturn:
@@ -877,12 +934,20 @@ class OpenCodeServerBackend:
         pending: set[asyncio.Task[None]],
         *,
         cancelled: bool,
+        expired: bool = False,
     ) -> None:
+        """Settle in-flight permission tasks before the turn returns.
+
+        ``expired`` tags the cancellation so the router reports "the human
+        timed out" instead of "the turn was interrupted" (both are
+        cancellations; only the notice differs).
+        """
         if not pending:
             return
         if cancelled:
+            reason = PERMISSION_BUDGET_EXPIRED_REASON if expired else None
             for task in pending:
-                task.cancel()
+                task.cancel(reason)
         await asyncio.gather(*pending, return_exceptions=True)
         pending.clear()
 

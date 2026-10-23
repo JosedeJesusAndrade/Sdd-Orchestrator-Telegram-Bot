@@ -10,8 +10,9 @@ deduplication, and reconnection with permission reconciliation.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from services.opencode_server.errors import OpenCodeStreamError, OpenCodeUnavail
 from services.opencode_server_backend import (
     PHASE3_REJECT_MESSAGE,
     OpenCodeServerBackend,
+    _PermissionBudget,
 )
 from services.permission_router import TIMEOUT_MESSAGE, PermissionRouter
 from services.permissions import PermissionDecision, PermissionRequest
@@ -671,6 +673,196 @@ async def test_permission_timeout_expiry_rejects_and_notifies_presenters() -> No
     assert resolved[0][0] == "per_1"
     assert resolved[0][1].timed_out is True
     assert resolved[0][1].cancelled is False
+
+
+async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
+    """Poll a condition without assuming a fixed number of loop iterations."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() > deadline:
+            raise AssertionError("condition not met before the timeout")
+        await asyncio.sleep(0.005)
+
+
+class _GateHandler:
+    """Permission handler whose answers are released one at a time by the test."""
+
+    def __init__(self) -> None:
+        self.requests: list[PermissionRequest] = []
+        self.gates: dict[str, asyncio.Event] = {}
+
+    async def __call__(self, request: PermissionRequest) -> PermissionDecision:
+        self.requests.append(request)
+        gate = asyncio.Event()
+        self.gates[request.id] = gate
+        await gate.wait()
+        return PermissionDecision(reply="once")
+
+    def answered(self, request_id: str) -> bool:
+        return request_id in self.gates
+
+
+class _RecordingPresenter:
+    """Presenter double that records every resolution."""
+
+    def __init__(self) -> None:
+        self.resolved: list[tuple[str, PermissionDecision]] = []
+
+    async def show(self, request: PermissionRequest) -> None:
+        return None
+
+    async def resolve(self, request_id: str, decision: PermissionDecision) -> None:
+        self.resolved.append((request_id, decision))
+
+
+async def test_two_pending_permissions_survive_the_first_resolution() -> None:
+    """CRITICAL regression: settling one dialog must not abort the turn.
+
+    ``_wait_with_permission`` used to raise ``TimeoutError`` whenever a
+    permission settled while another was still pending, so answering the first
+    dialog cancelled the second unanswered and failed the turn with a bogus
+    "did not finish in Ns" error. ``permission_timeout=0`` (D4) makes it worse:
+    "wait forever" still aborted on the first settled permission.
+    """
+    handler = _GateHandler()
+    client = FakeClient(streams=[[_permission("per_1"), _permission("per_2"), _Hang(), _idle()]])
+    backend = _backend(client, permission_handler=handler, timeout=5, permission_timeout=0)
+
+    task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
+    try:
+        await _wait_until(lambda: handler.answered("per_1") and handler.answered("per_2"))
+
+        handler.gates["per_1"].set()
+        await _wait_until(lambda: ("per_1", "once", None) in client.replies)
+        await asyncio.sleep(0.05)
+        assert not task.done(), "the turn must survive while per_2 is still pending"
+
+        handler.gates["per_2"].set()
+        await _wait_until(lambda: ("per_2", "once", None) in client.replies)
+        client.release()
+        result = await asyncio.wait_for(task, timeout=2)
+    finally:
+        if not task.done():
+            backend.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    assert result.cancelled is False
+    assert client.replies == [("per_1", "once", None), ("per_2", "once", None)]
+    assert client.aborted == []
+
+
+async def test_two_pending_permissions_survive_with_a_positive_timeout() -> None:
+    """Same multi-permission contract with the default kind of budget."""
+    handler = _GateHandler()
+    client = FakeClient(streams=[[_permission("per_1"), _permission("per_2"), _Hang(), _idle()]])
+    backend = _backend(client, permission_handler=handler, timeout=5, permission_timeout=5)
+
+    task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
+    try:
+        await _wait_until(lambda: handler.answered("per_1") and handler.answered("per_2"))
+
+        handler.gates["per_1"].set()
+        await _wait_until(lambda: ("per_1", "once", None) in client.replies)
+        await asyncio.sleep(0.05)
+        assert not task.done(), "the turn must survive while per_2 is still pending"
+
+        handler.gates["per_2"].set()
+        await _wait_until(lambda: ("per_2", "once", None) in client.replies)
+        client.release()
+        result = await asyncio.wait_for(task, timeout=2)
+    finally:
+        if not task.done():
+            backend.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    assert result.cancelled is False
+    assert client.replies == [("per_1", "once", None), ("per_2", "once", None)]
+    assert client.aborted == []
+
+
+async def test_backend_cancel_notifies_the_router_presenters() -> None:
+    """End-to-end: backend ``_finish_permissions(cancelled=True)`` → UI notice.
+
+    The original bug was the backend cancelling the handler task and nobody
+    telling the presenters. This drives the real chain (backend -> router ->
+    ``_resolve_all``) with only a fake client, no live server.
+    """
+    presenter = _RecordingPresenter()
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+    client = FakeClient(streams=[[_permission(), _Hang()]])
+    backend = _backend(
+        client,
+        permission_handler=router.request_permission,
+        timeout=5,
+        permission_timeout=0,
+    )
+
+    task = asyncio.create_task(backend.execute(prompt="x", model="openai/gpt", session_id=None))
+    await _wait_until(lambda: router.pending_count == 1)
+
+    backend.cancel()
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert result.cancelled is True
+    assert router.pending_count == 0
+    assert len(presenter.resolved) == 1
+    request_id, decision = presenter.resolved[0]
+    assert request_id == "per_1"
+    assert decision.cancelled is True
+    assert decision.timed_out is False
+
+
+async def test_backend_permission_budget_expiry_is_reported_as_expired() -> None:
+    """Defense-in-depth expiry must read as "expired", not "turn interrupted"."""
+    presenter = _RecordingPresenter()
+    # The router waits forever: only the backend's own budget can fire.
+    router = PermissionRouter(presenters=[presenter], timeout=0)
+    client = FakeClient(streams=[[_permission(), _Hang()]])
+    backend = _backend(
+        client,
+        permission_handler=router.request_permission,
+        timeout=5,
+        permission_timeout=0.1,
+    )
+
+    with pytest.raises(OpenCodeStreamError, match="permiso"):
+        await backend.execute(prompt="x", model="openai/gpt", session_id=None)
+
+    assert router.pending_count == 0
+    assert len(presenter.resolved) == 1
+    _, decision = presenter.resolved[0]
+    assert decision.cancelled is True
+    assert decision.timed_out is True
+
+
+# ── Permission budget is absolute, not per-wait ────────────────────────────
+
+
+def test_permission_budget_deadline_arms_once() -> None:
+    """The budget must not restart every time a permission settles (#6)."""
+    budget = _PermissionBudget(timeout=10.0)
+
+    assert budget.remaining(100.0) == pytest.approx(11.0)  # 10 + grace
+    assert budget.remaining(105.0) == pytest.approx(6.0)
+    assert budget.remaining(105.5) == pytest.approx(5.5)  # NOT re-armed to 11
+
+
+def test_permission_budget_is_rearmed_after_the_spell_ends() -> None:
+    budget = _PermissionBudget(timeout=10.0)
+
+    assert budget.remaining(100.0) == pytest.approx(11.0)
+    budget.clear()
+    assert budget.remaining(200.0) == pytest.approx(11.0)
+
+
+def test_zero_permission_budget_is_infinite() -> None:
+    budget = _PermissionBudget(timeout=0)
+
+    assert budget.remaining(100.0) is None
+    assert budget.remaining(1_000_000.0) is None
 
 
 # ── Dedup + reconnect ─────────────────────────────────────────────────────

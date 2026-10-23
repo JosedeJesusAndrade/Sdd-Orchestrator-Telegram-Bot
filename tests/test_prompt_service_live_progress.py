@@ -111,7 +111,7 @@ class _Backend:
         agent: str | None = None,
         workdir: str | None = None,
         source_label: str = "",
-        timeout: int | None = None,
+        timeout: float | None = None,
         on_progress: Any = None,
     ) -> AIBackendResult:
         self.received_on_progress = on_progress

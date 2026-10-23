@@ -292,6 +292,10 @@ async def test_buttons_deliver_the_right_decisions() -> None:
             PermissionDecision(reply="reject", message="cancelled", cancelled=True),
             RESULT_CANCELLED,
         ),
+        (
+            PermissionDecision(reply="reject", message="expired", timed_out=True, cancelled=True),
+            RESULT_TIMED_OUT,
+        ),
     ],
 )
 async def test_resolve_pops_and_appends_the_notice(
@@ -314,6 +318,12 @@ async def test_resolve_pops_and_appends_the_notice(
 async def test_result_text_maps_timeout_to_the_automatic_rejection() -> None:
     assert result_text(PermissionDecision(reply="reject", timed_out=True)) == RESULT_TIMED_OUT
     assert result_text(PermissionDecision(reply="reject")) == RESULT_REJECTED
+    # Backend permission-budget expiry: cancelled by the backend, but the
+    # correct message is "expired" (timed out waiting for the human).
+    assert (
+        result_text(PermissionDecision(reply="reject", timed_out=True, cancelled=True))
+        == RESULT_TIMED_OUT
+    )
 
 
 def test_result_text_maps_cancellation_to_the_interrupted_turn() -> None:

@@ -126,7 +126,7 @@ class OpenCodeCLIBackend:
         agent: str | None = None,
         workdir: str | None = None,
         source_label: str = "",
-        timeout: int | None = None,
+        timeout: float | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> AIBackendResult:
         """Execute a prompt via the OpenCode CLI subprocess.

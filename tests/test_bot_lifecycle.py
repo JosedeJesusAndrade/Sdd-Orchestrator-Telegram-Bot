@@ -14,6 +14,7 @@ regression in the order is caught without importing ``bot`` or starting PTB.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -24,6 +25,7 @@ from services.opencode_server.errors import (
 )
 from services.server_lifecycle import (
     SUPERVISOR_TASK_NAME,
+    log_startup_failure,
     start_server_lifecycle,
     start_server_or_exit,
     stop_after_startup_failure,
@@ -237,3 +239,32 @@ async def test_startup_cleanup_without_a_server_still_shuts_the_app_down() -> No
     await stop_after_startup_failure(None, shutdown=shutdown)
 
     assert order == ["app.shutdown"]
+
+
+# ── Startup failure log events (#1, finding 3) ───────────────────────────
+
+
+def test_config_error_logs_the_config_event(caplog: pytest.LogCaptureFixture) -> None:
+    """The missing-password path keeps its own diagnostic event."""
+    with caplog.at_level(logging.CRITICAL):
+        log_startup_failure(OpenCodeServerConfigError("OPENCODE_SERVER_PASSWORD is missing"))
+
+    events = [getattr(record, "event", "") for record in caplog.records]
+    assert "opencode_server_config_error" in events
+    assert "opencode_server_startup_failed" not in events
+
+
+def test_unavailable_error_logs_the_startup_failed_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A spawn/port failure must be distinguishable by event + error_type."""
+    with caplog.at_level(logging.CRITICAL):
+        log_startup_failure(OpenCodeUnavailableError("no se pudo iniciar opencode serve"))
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "opencode_server_startup_failed"
+    ]
+    assert len(records) == 1
+    assert getattr(records[0], "error_type", None) == "OpenCodeUnavailableError"

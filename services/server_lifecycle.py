@@ -24,12 +24,56 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from services.opencode_server.errors import OpenCodeServerError
+from services.opencode_server.errors import (
+    OpenCodeServerConfigError,
+    OpenCodeServerError,
+)
 from utils.logging import get_module_logger, log_exception
 
 logger = get_module_logger(__name__)
 
 SUPERVISOR_TASK_NAME = "opencode_server_supervisor"
+
+#: Fail-fast message for a misconfigured server backend. Logged with
+#: ``logger.critical()`` (always reaches the console handler) before exit.
+SERVER_CONFIG_ERROR_MESSAGE = (
+    "No se puede iniciar el bot en modo servidor: falta OPENCODE_SERVER_PASSWORD. "
+    "El servidor OpenCode exige Basic auth; define la variable en .env "
+    "(recomendado: openssl rand -hex 16) o usa OPENCODE_BACKEND=cli."
+)
+SERVER_STARTUP_ERROR_MESSAGE = (
+    "No se pudo iniciar el servidor OpenCode. Revisa el puerto "
+    "(OPENCODE_SERVER_PORT), que no lo ocupe otro proceso con otras "
+    "credenciales, y OPENCODE_SERVER_BINARY."
+)
+
+
+def log_startup_failure(error: OpenCodeServerError) -> None:
+    """Log the structured startup-failure event before the process exits 1.
+
+    Lives here (not inside ``run_bot``) so the event mapping is unit-testable
+    without importing the PTB entry point. A config error keeps its own
+    diagnostic and message; every other server error (spawn/port) is reported
+    as ``opencode_server_startup_failed`` with ``error_type``.
+    """
+    if isinstance(error, OpenCodeServerConfigError):
+        logger.critical(
+            SERVER_CONFIG_ERROR_MESSAGE,
+            extra={
+                "event": "opencode_server_config_error",
+                "error_type": type(error).__name__,
+            },
+            exc_info=True,
+        )
+        return
+    logger.critical(
+        SERVER_STARTUP_ERROR_MESSAGE,
+        extra={
+            "event": "opencode_server_startup_failed",
+            "error_type": type(error).__name__,
+        },
+        exc_info=True,
+    )
 
 
 class ServerLifecycle(Protocol):

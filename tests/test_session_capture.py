@@ -214,7 +214,7 @@ class _RecordingBackend:
         agent: str | None = None,
         workdir: str | None = None,
         source_label: str = "",
-        timeout: int | None = None,
+        timeout: float | None = None,
         on_progress: Any = None,
     ) -> AIBackendResult:
         self.session_ids.append(session_id)

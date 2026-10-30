@@ -17,6 +17,8 @@ import logging
 from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from services.ai_backend import AIBackendResult
 from services.chat_view import ConversationId
 from services.opencode_cli_backend import (
@@ -315,6 +317,26 @@ async def test_capture_persists_session_id_when_active_session_has_none() -> Non
     await service.execute(conversation_id=1, prompt_text="hola", view=_View())
 
     assert store.updated == [(1, SID)]
+
+
+async def test_capture_logs_the_full_session_id(caplog: pytest.LogCaptureFixture) -> None:
+    """Finding B: the ``ses_`` id must be traceable from ``session_id_captured``.
+
+    It is NOT a secret, so it is logged FULL while the chat id stays masked.
+    """
+    store = _RecordingStore(_session(real_id=None))
+    backend = _RecordingBackend([AIBackendResult(stdout="Hola\n", session_id=SID)])
+    service = PromptService(session_store=store, provider_factory=_Factory(backend))
+
+    with caplog.at_level(logging.INFO, logger="opencode_bot.services.prompt_service"):
+        await service.execute(conversation_id=123456789, prompt_text="hola", view=_View())
+
+    records = [
+        record for record in caplog.records if getattr(record, "event", "") == "session_id_captured"
+    ]
+    assert len(records) == 1
+    assert getattr(records[0], "session_id", None) == SID
+    assert getattr(records[0], "chat_id_masked", None) != "123456789"
 
 
 async def test_capture_does_nothing_without_active_session() -> None:

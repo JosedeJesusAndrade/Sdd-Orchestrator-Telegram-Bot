@@ -478,6 +478,7 @@ class PromptService:
                     "event": "session_id_captured",
                     "chat_id_masked": mask_chat_id(conversation_id),
                     "session_name": active.name,
+                    "session_id": session_id,
                 },
             )
 

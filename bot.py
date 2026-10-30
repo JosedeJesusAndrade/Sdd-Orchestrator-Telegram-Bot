@@ -35,6 +35,7 @@ from config import (
     CONTAINER_KEY,
     DEFAULT_MODEL,
     OPENAI_API_KEY,
+    OPENCODE_BACKEND,
     OPENCODE_TIMEOUT,
     OPENCODE_WORKDIR,
     setup_logger,
@@ -244,6 +245,26 @@ async def _connectivity_monitor(
             await asyncio.sleep(1)
 
 
+def _log_bot_start() -> None:
+    """Self-document the effective run mode at startup.
+
+    The ``backend`` field makes the ``server``/``cli`` selection explicit so a
+    silent revert to the rollback mode is visible without inferring it from
+    indirect events (e.g. ``permission_presenter_skipped``).
+    """
+    logger.info(
+        "Bot starting",
+        extra={
+            "event": "bot_start",
+            "backend": OPENCODE_BACKEND,
+            "workdir": OPENCODE_WORKDIR,
+            "timeout": OPENCODE_TIMEOUT,
+            "allowed_chats": len(ALLOWED_CHAT_IDS),
+            "default_model": DEFAULT_MODEL,
+        },
+    )
+
+
 def build_application() -> Application[Any, Any, Any, Any, Any, Any]:
     """Build and configure the Application without running it."""
 
@@ -252,16 +273,7 @@ def build_application() -> Application[Any, Any, Any, Any, Any, Any]:
     # full traceback on every retry. We handle it cleanly in our error_handler.
     _suppress_network_tracebacks()
 
-    logger.info(
-        "Bot starting",
-        extra={
-            "event": "bot_start",
-            "workdir": OPENCODE_WORKDIR,
-            "timeout": OPENCODE_TIMEOUT,
-            "allowed_chats": len(ALLOWED_CHAT_IDS),
-            "default_model": DEFAULT_MODEL,
-        },
-    )
+    _log_bot_start()
     logger.info("Workdir: %s", OPENCODE_WORKDIR)
     logger.info("Timeout: %ds", OPENCODE_TIMEOUT)
     logger.info("Allowed chats: %d", len(ALLOWED_CHAT_IDS))
